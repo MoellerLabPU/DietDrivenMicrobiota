@@ -18,6 +18,7 @@ import logging
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from Bio import SeqIO
 from Bio.Seq import MutableSeq, Seq
@@ -96,7 +97,7 @@ def get_major_allele(row: pd.Series, timepoint_suffix: str) -> str:
     # Create a dictionary of allele frequencies for the specified timepoint.
     # e.g., {'A': 0.9, 'T': 0.1, 'G': 0.0, 'C': 0.0} for suffix 'post'.
     freqs = {
-        allele: row.get(f"{allele}_frequency_{timepoint_suffix}", float("nan"))
+        allele: row.get(f"{allele}_frequency_{timepoint_suffix}", np.nan)
         for allele in alleles
     }
 
@@ -305,7 +306,9 @@ def analyze_mag(args_tuple):
             f"Expected one other timepoint besides '{args.focus_timepoint}', found {len(other_suffixes)}. Skipping MAG."
         )
     before_timepoint_suffix = other_suffixes[0]
-
+    logging.info(
+        f"Starting analysis for {mag_id} with before timepoint: {before_timepoint_suffix} and after timepoint: {args.focus_timepoint}"
+    )
     # --- Site-by-Site Analysis ---
     # Iterate through each significant site passed to this function for this MAG.
     for _, site_row in sites.iterrows():
@@ -343,10 +346,6 @@ def analyze_mag(args_tuple):
                 f"Gene info not found for significant site in {gene_id} at position {position} in {mag_id}.\n"
                 "Make sure that the correct ORF file and significant sites file are used."
             )
-
-        logging.info(
-            f"Starting analysis with before timepoint: {before_timepoint_suffix} and after timepoint: {args.focus_timepoint}"
-        )
 
         # A single site can be significant in multiple replicates and subjectIDs. Loop through each.
         for _, freq_row in site_freq_data.iterrows():
@@ -491,4 +490,5 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
     main()
