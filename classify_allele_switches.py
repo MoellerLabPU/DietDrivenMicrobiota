@@ -25,6 +25,31 @@ from Bio.Seq import MutableSeq, Seq
 from tqdm import tqdm
 
 
+def init_worker(freq_df, gene_data, mag_id, before_timepoint_suffix, cli_args):
+    """
+    Initializer for each worker process in the pool.
+
+    This function is called once per worker. It sets up global variables
+    within the worker's own memory space. This is the most efficient way to
+    provide large, read-only objects to worker processes, as it avoids
+    repeatedly sending the data with each task.
+
+    Args:
+        freq_df (pd.DataFrame): The allele frequency data for the current MAG.
+        gene_data (dict): The parsed ORF/gene data for the current MAG.
+        mag_id (str): The ID of the MAG being processed.
+        before_timepoint_suffix (str): The suffix for the 'before' timepoint.
+        cli_args (argparse.Namespace): The parsed command-line arguments.
+    """
+    # These globals are specific to each worker process, not shared between them.
+    global g_freq_df, g_gene_data, g_mag_id, g_before_timepoint_suffix, g_args
+    g_freq_df = freq_df
+    g_gene_data = gene_data
+    g_mag_id = mag_id
+    g_before_timepoint_suffix = before_timepoint_suffix
+    g_args = cli_args
+
+
 def parse_orf_file(orf_path: Path) -> dict:
     """
     Parses a Prodigal ORF file (.fna or .fna.gz) into a dictionary using Biopython.
@@ -390,6 +415,76 @@ def analyze_mag(args_tuple):
     return mag_results
 
 
+def analyze_site_for_mag(site_row: pd.Series) -> list:
+    """
+    Analyzes a single significant site for the currently loaded MAG.
+
+    This function is called by a multiprocessing pool and relies on the global
+    variables set by the `init_worker` function.
+
+    Args:
+        site_row: A pandas Series representing one row from the significant sites file.
+
+    Returns:
+        A list of result dictionaries, one for each replicate with an allele switch.
+    """
+    # These global variables are guaranteed to exist in the worker process
+    # because they were set by the `init_worker` function.
+    global g_freq_df, g_gene_data, g_args, g_before_timepoint_suffix, g_mag_id
+
+    site_results = []
+    contig, position, gene_id = (
+        site_row["contig"],
+        site_row["position"],
+        site_row["gene_id"],
+    )
+
+    try:
+        site_freq_data = g_freq_df.loc[[(contig, position)]]
+        gene_id = str(gene_id).strip()
+        gene_info = g_gene_data.get(gene_id)
+    except KeyError:
+        return []
+
+    if gene_info is None:
+        logging.error(
+            f"Gene info for '{gene_id}' not found in ORF file for MAG {g_mag_id} "
+            f"at site {contig}:{position}. Please check file consistency."
+        )
+        return []
+
+    for _, freq_row in site_freq_data.iterrows():
+        major_allele_before = get_major_allele(freq_row, g_before_timepoint_suffix)
+        major_allele_after = get_major_allele(freq_row, g_args.focus_timepoint)
+
+        if (
+            major_allele_before is None
+            or major_allele_after is None
+            or major_allele_before == major_allele_after
+        ):
+            continue
+
+        mutation_info = analyze_mutation_effect(
+            gene_info, position, major_allele_before, major_allele_after
+        )
+
+        if mutation_info:
+            site_results.append(
+                {
+                    "mag_id": g_mag_id,
+                    "subjectID": freq_row["subjectID"],
+                    "replicate": freq_row["replicate"],
+                    "contig": contig,
+                    "position": position,
+                    "gene_id": gene_id,
+                    f"major_allele_before ({g_before_timepoint_suffix})": major_allele_before,
+                    f"major_allele_after ({g_args.focus_timepoint})": major_allele_after,
+                    **mutation_info,
+                }
+            )
+    return site_results
+
+
 def main():
     """Main execution function to set up, run, and save the analysis."""
     # --- Setup logging and command-line arguments ---
@@ -443,46 +538,97 @@ def main():
         logging.error(f"Input file not found: {args.significant_sites}. Exiting.")
         return
 
-    # --- Prepare for Parallel Processing ---
-    # Filter to keep only MAGs that have at least one significant site associated with a valid gene.
+    # Filter the significant sites dataframe to keep only rows with a valid, single gene_id.
     logging.info(
-        "Filtering MAGs to include only those with at least one valid gene_id."
+        "Pre-filtering sites to include only those with a valid, single gene_id."
     )
-    mags_with_genes = sig_sites_df.dropna(subset=["gene_id"])["mag_id"].unique()
-    filtered_sites_df = sig_sites_df[sig_sites_df["mag_id"].isin(mags_with_genes)]
+    sites_to_process = sig_sites_df.dropna(subset=["gene_id"]).copy()
+    sites_to_process["gene_id"] = sites_to_process["gene_id"].astype(str)
+    # Exclude sites that map to multiple genes (comma-separated).
+    sites_to_process = sites_to_process[~sites_to_process["gene_id"].str.contains(",")]
 
-    # Group the filtered significant sites by MAG. This creates one "task" per MAG.
-    grouped_sites = filtered_sites_df.groupby("mag_id")
-    # Create a list of tuples. Each tuple contains all arguments needed by analyze_mag.
-    # This is the standard way to pass multiple arguments to a map function in multiprocessing.
-    tasks = [(mag_id, sites, args) for mag_id, sites in grouped_sites]
-
+    # Get a sorted, unique list of MAGs to process.
+    mags_to_process = sorted(sites_to_process["mag_id"].unique())
     final_results = []
-    num_mags = len(tasks)
 
-    if num_mags > 0:
-        # Use the specified number of threads, but don't use more threads than there are MAGs.
-        threads_to_use = min(args.threads, num_mags)
-        logging.info(
-            f"Starting analysis on {num_mags} MAGs using {threads_to_use} threads..."
+    if not mags_to_process:
+        logging.warning(
+            "No significant sites found in any MAGs after filtering. Exiting."
         )
+        return
 
-        # --- Run Analysis in Parallel ---
+    # --- Sequential Loop Over MAGs ---
+    # The outer loop processes one MAG at a time. Parallelization happens on the sites *within* this loop.
+    for mag_id in tqdm(mags_to_process, desc="Processing MAGs", unit="MAG"):
+        freq_path = (
+            args.frequency_dir
+            / f"{mag_id}_allele_frequency_changes_no_zero-diff.tsv.gz"
+        )
+        # Use glob to find the ORF file, whether it's gzipped or not.
+        orf_path = next(args.orf_dir.glob(f"{mag_id}.fna*"), None)
+        # Skip this MAG if essential files are missing.
+        if not freq_path.exists() or not orf_path:
+            logging.warning(f"Missing frequency or ORF file for {mag_id}. Skipping.")
+            continue
+
+        # --- 1. Load data for the current MAG ---
+        # Read only necessary columns to save memory.
+        header = pd.read_csv(freq_path, sep="\t", compression="gzip", nrows=0).columns
+        cols_to_use = [c for c in header if not c.endswith("_frequency_diff")]
+        freq_df = pd.read_csv(
+            freq_path, sep="\t", compression="gzip", usecols=cols_to_use
+        )
+        freq_df.set_index(
+            ["contig", "position"], inplace=True
+        )  # Set index for fast lookups.
+
+        # Parse the entire ORF file into a dictionary for fast access.
+        gene_data = parse_orf_file(orf_path)
+        if not gene_data:
+            logging.warning(f"No ORF data loaded for {mag_id}. Skipping.")
+            continue
+        # --- Timepoint Determination ---
+        # Dynamically find the timepoint suffixes (e.g., 'pre', 'post') from the column names.
+        timepoint_cols = [c for c in freq_df.columns if c.startswith("A_frequency_")]
+        suffixes = {c.split("_")[-1] for c in timepoint_cols}
+        if args.focus_timepoint not in suffixes:
+            raise ValueError(
+                f"Focus timepoint '{args.focus_timepoint}' not found in columns of {freq_path}. Skipping MAG."
+            )
+
+        # Find the other timepoint to use as the reference ("before").
+        other_suffixes = list(suffixes - {args.focus_timepoint})
+        if len(other_suffixes) != 1:
+            raise ValueError(
+                f"Expected one other timepoint besides '{args.focus_timepoint}', found {len(other_suffixes)}. Skipping MAG."
+            )
+        before_timepoint_suffix = other_suffixes[0]
+        # --- 2. Prepare site-level tasks and initializer arguments ---
+        # Filter the dataframe to get only the sites for the current MAG.
+        mag_sites_df = sites_to_process[sites_to_process["mag_id"] == mag_id]
+        # Convert the dataframe rows into a list of tasks for the pool.
+        tasks = [row for _, row in mag_sites_df.iterrows()]
+        if not tasks:
+            logging.warning(f"No sites found for MAG {mag_id}. Skipping.")
+            continue
+        # Package all the data needed by the workers into a tuple.
+        init_args = (freq_df, gene_data, mag_id, before_timepoint_suffix, args)
+        logging.info(
+            f"Starting analysis for {mag_id} with {len(mag_sites_df):,} sites across using 'before' timepoint: {before_timepoint_suffix} and 'after' timepoint: {args.focus_timepoint}"
+        )
+        # --- 3. Analyze all sites for this MAG in parallel ---
+        # Don't use more threads than there are tasks.
+        threads_to_use = min(args.threads, len(tasks))
         # Create a pool of worker processes.
-        with Pool(processes=threads_to_use) as pool:
-            # `pool.imap_unordered` applies the `analyze_mag` function to each item in `tasks`.
-            # It returns results as they are completed, which is more efficient than `pool.map`.
-            # `tqdm` wraps the iterator to create a live progress bar in the console.
-            for mag_results in tqdm(
-                pool.imap_unordered(analyze_mag, tasks),
-                total=num_mags,
-                desc="Analyzing MAGs",
-            ):
-                # Extend the final list with results from each completed MAG.
-                if mag_results:
-                    final_results.extend(mag_results)
-
-    # --- Write Final Output ---
+        with Pool(
+            processes=threads_to_use, initializer=init_worker, initargs=init_args
+        ) as pool:
+            # `imap_unordered` is memory-efficient. It applies the function to each task
+            # and yields results as they complete, which is great for progress bars.
+            for site_results_list in pool.imap_unordered(analyze_site_for_mag, tasks):
+                if site_results_list:
+                    final_results.extend(site_results_list)
+    # --- 4. Write final output ---
     if not final_results:
         logging.warning("No major allele switches resulting in mutations were found.")
     else:
@@ -496,5 +642,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
     main()
