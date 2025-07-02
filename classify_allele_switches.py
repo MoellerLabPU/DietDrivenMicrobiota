@@ -283,6 +283,7 @@ def analyze_mag(args_tuple):
     header = pd.read_csv(freq_path, sep="\t", compression="gzip", nrows=0).columns
     cols_to_use = [c for c in header if not c.endswith("_frequency_diff")]
     freq_df = pd.read_csv(freq_path, sep="\t", compression="gzip", usecols=cols_to_use)
+    freq_df.set_index(["contig", "position"], inplace=True)
 
     # Pre-load all gene data for this MAG into a dictionary for fast access.
     gene_data = parse_orf_file(orf_path)
@@ -334,9 +335,12 @@ def analyze_mag(args_tuple):
             continue
 
         # Filter the large frequency dataframe to just the rows for this specific site.
-        site_freq_data = freq_df[
-            (freq_df["contig"] == contig) & (freq_df["position"] == position)
-        ]
+        # site_freq_data = freq_df[
+        #     (freq_df["contig"] == contig) & (freq_df["position"] == position)
+        # ]
+        # Using [[(contig, position)]] ensures the result is always a DataFrame.
+        site_freq_data = freq_df.loc[[(contig, position)]]
+
         # Get the pre-parsed gene information using the gene_id.
         gene_info = gene_data.get(gene_id)
 
