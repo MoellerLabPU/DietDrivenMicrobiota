@@ -270,7 +270,9 @@ def analyze_mag(args_tuple):
     mag_results = []
 
     # --- File Path and Data Loading ---
-    freq_path = args.frequency_dir / f"{mag_id}_allele_frequency_changes.tsv.gz"
+    freq_path = (
+        args.frequency_dir / f"{mag_id}_allele_frequency_changes_no_zero-diff.tsv.gz"
+    )
     orf_path_fna = args.orf_dir / f"{mag_id}.fna"
     orf_path_fnagz = args.orf_dir / f"{mag_id}.fna.gz"
     orf_path = orf_path_fna if orf_path_fna.exists() else orf_path_fnagz
