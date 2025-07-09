@@ -190,7 +190,7 @@ def calculate_potential_sites(gene_seq_str: str) -> dict:
         # Skip partial codons at the end of a sequence.
         if len(codon) != 3:
             logging.warning(
-                f"Gene sequence '{gene_seq_str}' of length {len(gene_seq_str)} is not a multiple of 3. "
+                f"Gene sequence '{gene_seq_str}' of length {len(gene_seq_str):,} is not a multiple of 3. "
                 f"Skipping partial codon at position {i}."
             )
             continue
@@ -259,11 +259,7 @@ def setup_and_load_data(args):
         A pandas DataFrame of sites to be processed, or None if no sites are found.
     """
     logging.info(f"Loading significant sites from {args.significant_sites}")
-    try:
-        sig_sites_df = pd.read_csv(args.significant_sites, sep="\t")
-    except FileNotFoundError:
-        logging.error(f"Input file not found: {args.significant_sites}. Exiting.")
-        return None
+    sig_sites_df = pd.read_csv(args.significant_sites, sep="\t")
 
     # Filter for paired t-tests if the column exists
     if "test_type" in sig_sites_df.columns:
@@ -319,9 +315,7 @@ def process_single_mag(mag_id, sites_for_mag, args):
     cols_to_use = [c for c in header if not c.endswith("_frequency_diff")]
     freq_df = pd.read_csv(freq_path, sep="\t", compression="gzip", usecols=cols_to_use)
     # Set multi-index for fast lookups by contig and position
-    freq_df.set_index(
-        ["contig", "position"], inplace=True
-    )  # Set index for fast lookups.
+    freq_df.set_index(["contig", "position"], inplace=True)
 
     # Parse the entire ORF file into a dictionary for fast access.
     gene_data = parse_orf_file(orf_path)
@@ -333,13 +327,13 @@ def process_single_mag(mag_id, sites_for_mag, args):
     # This step calculates the denominator for dN/dS calculations.
     # We do this once per gene rather than once per site to avoid redundancy.
     logging.info(
-        f"Calculating potential synonymous and nonsynonymous sites for {len(gene_data)} genes in {mag_id}..."
+        f"Calculating potential synonymous and nonsynonymous sites for {len(gene_data):,} genes in {mag_id}..."
     )
     for gene_id, info in gene_data.items():
         seq_str = str(info["record"].seq)
         if len(seq_str) % 3 != 0:
             logging.warning(
-                f"Gene {gene_id} in {mag_id} has length {len(seq_str)} (not a multiple of 3)."
+                f"Gene {gene_id} in {mag_id} has length {len(seq_str):,} (not a multiple of 3)."
             )
         # Update the gene data dict with potential S and N sites.
         # The enhanced gene_data is later passed to the workers.
@@ -375,7 +369,8 @@ def process_single_mag(mag_id, sites_for_mag, args):
     # Package all the data needed by the workers into a tuple.
     init_args = (freq_df, gene_data, mag_id, before_timepoint_suffix, args)
     logging.info(
-        f"\nStarting analysis for {mag_id} with {len(tasks)} sites. Before: '{before_timepoint_suffix}', After: '{args.focus_timepoint}'"
+        f"\nStarting analysis for {mag_id} with {len(tasks):,} sites. "
+        f"Before timepoint: '{before_timepoint_suffix}', After timepoint: '{args.focus_timepoint}'"
     )
 
     # --- 4. Run analysis in parallel ---
@@ -485,6 +480,9 @@ def get_major_allele(row: pd.Series, timepoint_suffix: str) -> str:
     # This handles cases where some allele frequencies might be NaN or missing.
     valid_freqs = {a: f for a, f in freqs.items() if pd.notna(f)}
     if not valid_freqs:
+        logging.warning(
+            f"No valid allele frequencies found for timepoint '{timepoint_suffix}' in row: {row.name}"
+        )
         return None
 
     # Find the highest frequency value.
@@ -591,6 +589,10 @@ def analyze_mutation_effect(
 
         # If the allele isn't one of the four bases (e.g., 'N'), we can't analyze it.
         if effective_allele_before is None or effective_allele_after is None:
+            logging.warning(
+                f"Allele '{allele_before}' or '{allele_after}' is not a valid base for gene {gene_record.id} "
+                f"on reverse strand. Skipping."
+            )
             return {}  # Return empty dict to skip this site.
     else:
         logging.warning(
@@ -691,6 +693,7 @@ def analyze_site_for_mag(site_row: pd.Series) -> list:
     # Look up frequency data for this specific site (contig and position).
     # Using .loc[[(...)]] ensures the result is always a DataFrame.
     site_freq_data = g_freq_df.loc[[(contig, position)]]
+    gene_id = str(gene_id).strip()
     # Get the pre-parsed gene information using the gene_id.
     gene_info = g_gene_data.get(gene_id)
 
@@ -773,7 +776,7 @@ def summarize_results(results_df):
     grouped = results_df.groupby(["mag_id", "group", "contig", "position", "gene_id"])
 
     # Perform aggregations to get detailed stats for each site
-    position_summary_df = grouped.agg(
+    position_stats = grouped.agg(
         num_subjects_changed=("subjectID", "nunique"),
         # Count "S" and "NS" instead of full words.
         s_count=("mutation_type", lambda s: (s == "S").sum()),
@@ -787,13 +790,11 @@ def summarize_results(results_df):
     ).reset_index()
 
     # Calculate the percentage of subjects with synonymous vs. non-synonymous changes.
-    position_summary_df["percent_synonymous"] = (
-        (position_summary_df["s_count"] / position_summary_df["num_subjects_changed"])
-        * 100
+    position_stats["percent_synonymous"] = (
+        (position_stats["s_count"] / position_stats["num_subjects_changed"]) * 100
     ).round(2)
-    position_summary_df["percent_nonsynonymous"] = (
-        (position_summary_df["ns_count"] / position_summary_df["num_subjects_changed"])
-        * 100
+    position_stats["percent_nonsynonymous"] = (
+        (position_stats["ns_count"] / position_stats["num_subjects_changed"]) * 100
     ).round(2)
 
     # --- 2. Gene-level Statistics (Stratified by Group, with dN/dS) ---
@@ -874,7 +875,7 @@ def summarize_results(results_df):
         lambda row: row["dN"] / row["dS"] if row["dS"] > 0 else np.nan, axis=1
     )
 
-    return {"position": position_summary_df, "gene": gene_stats, "mag": mag_stats}
+    return {"position": position_stats, "gene": gene_stats, "mag": mag_stats}
 
 
 def write_output_files(summaries, results_df, args):
@@ -995,7 +996,7 @@ def main():
         return
 
     logging.info(
-        f"Processing {len(sites_to_process)} significant sites across {sites_to_process['mag_id'].nunique()} MAGs"
+        f"Processing {len(sites_to_process):,} significant sites across {sites_to_process['mag_id'].nunique()} MAGs"
     )
 
     # --- 2. Main Processing Loop ---
@@ -1003,7 +1004,9 @@ def main():
     all_results = []
     mags_to_process = sorted(sites_to_process["mag_id"].unique())
 
-    for mag_id in tqdm(mags_to_process, desc="Processing MAGs", unit="MAG"):
+    for mag_id in tqdm(
+        mags_to_process, desc="Processing MAGs", unit="MAG", total=len(mags_to_process)
+    ):
         # Filter the dataframe to get only the sites for the current MAG.
         sites_for_mag = sites_to_process[sites_to_process["mag_id"] == mag_id]
         if sites_for_mag.empty:
@@ -1024,11 +1027,6 @@ def main():
 
     # Convert the list of result dictionaries into a pandas DataFrame.
     results_df = pd.DataFrame(all_results)
-    logging.info(f"Total mutation events found: {len(results_df)}")
-    logging.info(f"Synonymous mutations: {(results_df['mutation_type'] == 'S').sum()}")
-    logging.info(
-        f"Non-synonymous mutations: {(results_df['mutation_type'] == 'NS').sum()}"
-    )
 
     # Generate summary statistics at different levels
     summaries = summarize_results(results_df)
