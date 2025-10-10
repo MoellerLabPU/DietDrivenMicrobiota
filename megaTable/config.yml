@@ -1,9 +1,9 @@
-run_name: "test1"
-# These are the inputs for extract_mag_positions.py
+run_name: "actual_run"
+
 # Input directory for two-sample paired results
-significance_dir_two_sample_paired: "/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_final/longitudinal/significance_tests/two_sample_paired_pre_end-fat_control"
+significance_dir_two_sample_paired: "/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_final_copy_dnds/longitudinal/significance_tests/two_sample_paired_pre_end-fat_control"
 # Input directory for single-sample results
-significance_dir_single_sample: "/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_final/longitudinal/significance_tests/single_sample_pre_end-fat_control"
+significance_dir_single_sample: "/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_final_copy_dnds/longitudinal/significance_tests/single_sample_pre_end-fat_control"
 
 # Inputs for quality_control.py
 # Root directory with *_metadata.tsv files
@@ -18,7 +18,7 @@ mag_mapping: "/scratch/gpfs/AMOELLER/diet_manip/megamag_mapping.tsv"
 p_value_summary_dir: "/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_final_copy_dnds/longitudinal/p_value_summary/pre_end-fat_control_rerun"
 
 # Output
-output_dir: "/scratch/gpfs/AMOELLER/sidd/diet_manip/AlleleFlux_final/longitudinal/megaTable"
+output_dir: "/scratch/gpfs/AMOELLER/sidd/diet_manip/mega_table"
 
 # Parameters
 breadth_threshold: 0.1
@@ -28,6 +28,6 @@ cpus: 16
 # will generate a file for each group.
 # Example: ["fat", "control"]
 single_sample_groups: ["fat", "control"]
-
+# single_sample_groups: ["fat"]
 
 

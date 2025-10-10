@@ -3,6 +3,8 @@ import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 import logging
+from functools import partial
+from multiprocessing import Pool
 
 # Load configuration
 configfile: "config.yml"
@@ -168,14 +170,55 @@ def _load_and_flatten_qc_summaries(qc_dir):
     return result
 
 
-def _merge_coverage_with_pvalues(bh_pvalues_file, coverage_stats_dir, output_file, group_label=None):
-    """Merge coverage statistics with BH-corrected p-values.
+def _load_and_merge_single_mag(mag_data, coverage_stats_dir):
+    """Load coverage data for a single MAG and merge with p-value subset.
+    
+    This function is designed to be called in parallel via Pool.imap_unordered.
+    
+    Parameters
+    - mag_data: Tuple of (mag_id, df_pvalues_subset)
+    - coverage_stats_dir: Directory containing coverage files
+    
+    Returns merged DataFrame or None if file not found.
+    """
+    mag_id, df_pvalues_subset = mag_data
+    coverage_file = os.path.join(coverage_stats_dir, f"{mag_id}_stats.tsv")
+    
+    if not os.path.exists(coverage_file):
+        workflow_logger.warning(f"Coverage file not found for MAG {mag_id}")
+        return None
+    
+    # Load coverage data
+    df_cov = pd.read_csv(coverage_file, sep='\t')
+    df_cov['MAG'] = mag_id
+    
+    # Merge with p-values for this MAG
+    merged = df_pvalues_subset.merge(
+        df_cov,
+        on=['MAG', 'contig', 'position'],
+        how='left'
+    )
+    
+    return merged
+
+
+def _merge_coverage_with_pvalues(bh_pvalues_file, coverage_stats_dir, output_file, group_label=None, n_jobs=4):
+    """Merge coverage statistics with BH-corrected p-values using parallel processing.
+    
+    Uses a hybrid approach:
+    1. Splits p-values by MAG
+    2. Processes each MAG in parallel (load + merge)
+    3. Concatenates results
+    
+    This is faster than sequential processing while being more memory-efficient
+    than loading all files at once.
     
     Parameters
     - bh_pvalues_file: Path to BH p-values file (gzipped TSV)
     - coverage_stats_dir: Directory containing MAG coverage stats files
     - output_file: Path for output merged_table file
     - group_label: Optional group label for logging (e.g., 'fat', 'control')
+    - n_jobs: Number of parallel workers (default: 4)
     
     Returns the merged DataFrame.
     """
@@ -188,31 +231,36 @@ def _merge_coverage_with_pvalues(bh_pvalues_file, coverage_stats_dir, output_fil
     # Get unique MAGs from the p-value table
     mags_needed = df_pvalues['MAG'].unique()
     workflow_logger.info(f"Found {len(mags_needed):,} unique MAGs in p-value table")
+    workflow_logger.info(f"Using {n_jobs} parallel workers for merging")
     
-    # Load and concatenate coverage stats for relevant MAGs
-    coverage_dfs = []
-    for mag_id in tqdm(mags_needed, desc="Loading MAG coverage files", unit="MAG"):
-        coverage_file = os.path.join(coverage_stats_dir, f"{mag_id}_mean_coverage.tsv")
-        if os.path.exists(coverage_file):
-            df_cov = pd.read_csv(coverage_file, sep='\t')
-            df_cov['MAG'] = mag_id
-            coverage_dfs.append(df_cov)
-        else:
-            workflow_logger.warning(f"Coverage file not found for MAG {mag_id}")
+    # Split p-values by MAG for parallel processing
+    pvalue_groups = {mag: df_pvalues[df_pvalues['MAG'] == mag] for mag in mags_needed}
     
-    if not coverage_dfs:
+    # Prepare data for parallel processing (list of tuples)
+    mag_data_list = [(mag_id, pvalue_groups[mag_id]) for mag_id in mags_needed]
+    
+    # Create worker function with fixed coverage_stats_dir
+    worker = partial(_load_and_merge_single_mag, coverage_stats_dir=coverage_stats_dir)
+    
+    # Process MAGs in parallel using multiprocessing.Pool
+    merged_chunks = []
+    with Pool(processes=n_jobs) as pool:
+        # Use imap_unordered for memory efficiency (processes results as they complete)
+        for result in tqdm(
+            pool.imap_unordered(worker, mag_data_list),
+            total=len(mag_data_list),
+            desc="Merging MAG coverage files",
+            unit="MAG"
+        ):
+            if result is not None:
+                merged_chunks.append(result)
+    
+    if not merged_chunks:
         raise ValueError("No coverage stats files found for any MAGs in p-value table")
     
-    df_coverage = pd.concat(coverage_dfs, ignore_index=True)
-    workflow_logger.info(f"Loaded coverage stats with {df_coverage.shape[0]:,} total positions across all MAGs")
-    
-    # Merge on MAG, contig, and position
-    merged_table = df_pvalues.merge(
-        df_coverage,
-        on=['MAG', 'contig', 'position'],
-        how='left'
-    )
-    
+    # Concatenate all merged chunks
+    workflow_logger.info(f"Concatenating {len(merged_chunks):,} merged chunks...")
+    merged_table = pd.concat(merged_chunks, ignore_index=True)
     workflow_logger.info(f"Created merged_table{group_info} with {merged_table.shape[0]:,} positions and {merged_table.shape[1]:,} columns")
     
     # Write output
@@ -261,7 +309,7 @@ if not config.get("mag_list"):
 with open(MAG_LIST_FILE) as f:
     MAGS = [line.strip() for line in f if line.strip()]
 
-COVERAGE_STATS_FILES = expand(os.path.join(BASE_OUTPUT_DIR, "coverage_stats", "{mag}_mean_coverage.tsv"), mag=MAGS)
+COVERAGE_STATS_FILES = expand(os.path.join(BASE_OUTPUT_DIR, "coverage_stats", "{mag}_stats.tsv"), mag=MAGS)
 
 
 PAIRED_MERGED_TABLE_1 = os.path.join(BASE_OUTPUT_DIR, "pValue_stats_merged", "two_sample_paired_merged_table.tsv.gz")
@@ -510,7 +558,7 @@ rule quality_control_single:
 
 # --- Step 3: Compute Coverage and Allele Statistics per MAG ---
 
-rule compute_mean_coverage:
+rule compute_stats:
     """
     Compute coverage and allele statistics for a single MAG.
     Requires metadata_dir and optionally uses qc_dir for filtering.
@@ -519,7 +567,7 @@ rule compute_mean_coverage:
         metadata_dir=config["metadata_dir"],
         qc_dir=config["qc_dir"]
     output:
-        mean_coverage_out=os.path.join(BASE_OUTPUT_DIR, "coverage_stats", "{mag}_mean_coverage.tsv"),
+        stats_out=os.path.join(BASE_OUTPUT_DIR, "coverage_stats", "{mag}_stats.tsv"),
 
     threads: 1
     shell:
@@ -543,15 +591,16 @@ rule create_merged_table_paired:
         coverage_stats=COVERAGE_STATS_FILES,
     output:
         merged_table=PAIRED_MERGED_TABLE_1,
-    threads: 1
+    threads: 16
     resources:
-        mem_mb=400000
+        mem_mb=200000
     run:
         _merge_coverage_with_pvalues(
             bh_pvalues_file=input.bh_pvalues,
             coverage_stats_dir=os.path.join(BASE_OUTPUT_DIR, "coverage_stats"),
             output_file=output.merged_table,
-            group_label=None
+            group_label=None,
+            n_jobs=threads  # Use Snakemake's thread allocation
         )
 
 rule create_merged_table_single:
@@ -567,14 +616,15 @@ rule create_merged_table_single:
     params:
         group="{group}",
     resources:
-        mem_mb=400000
-    threads: 1
+        mem_mb=200000
+    threads: 16
     run:
         _merge_coverage_with_pvalues(
             bh_pvalues_file=input.bh_pvalues,
             coverage_stats_dir=os.path.join(BASE_OUTPUT_DIR, "coverage_stats"),
             output_file=output.merged_table,
-            group_label=params.group
+            group_label=params.group,
+            n_jobs=threads  # Use Snakemake's thread allocation
         )
 
 # --- Step 5: Create Final Megatables with QC Summary Data ---
@@ -593,7 +643,7 @@ rule create_megatable_paired:
         qc_dir=os.path.dirname(PAIRED_QC_SUMMARY),
     threads: 1
     resources:
-        mem_mb=400000
+        mem_mb=200000
     run:
         # Load the merged table (p-values + coverage stats)
         df_merged = pd.read_csv(input.merged_table, sep='\t')
@@ -632,7 +682,7 @@ rule create_megatable_single:
         qc_dir=os.path.join(BASE_OUTPUT_DIR, "qc_results_single_{group}"),
     threads: 1
     resources:
-        mem_mb=400000
+        mem_mb=200000
     run:
         # Load the merged table (p-values + coverage stats)
         df_merged = pd.read_csv(input.merged_table, sep='\t', compression='gzip')
