@@ -108,10 +108,10 @@ def _load_and_flatten_qc_summaries(qc_dir):
     
     Returns a flattened DataFrame with MAG_ID as the key.
     """
-    overall_file = os.path.join(qc_dir, "ALL_MAGs_QC_overall_summary.tsv")
-    group_file = os.path.join(qc_dir, "ALL_MAGs_QC_group_summary.tsv")
-    group_time_file = os.path.join(qc_dir, "ALL_MAGs_QC_group_time_summary.tsv")
-    
+    overall_file = os.path.join(qc_dir, "ALL_MAGs_positions_QC_overall_summary.tsv")
+    group_file = os.path.join(qc_dir, "ALL_MAGs_positions_QC_group_summary.tsv")
+    group_time_file = os.path.join(qc_dir, "ALL_MAGs_positions_QC_group_time_summary.tsv")
+
     # Load overall summary
     if not os.path.exists(overall_file):
         raise FileNotFoundError(f"Overall QC summary not found: {overall_file}")
@@ -278,13 +278,13 @@ BASE_OUTPUT_DIR = config["output_dir"]
 # Paired sample outputs
 PAIRED_POSITIONS_FILE = os.path.join(BASE_OUTPUT_DIR, "tested_positions", "two_sample_paired_mag_positions.tsv.gz")
 PAIRED_BH_pValues = os.path.join(BASE_OUTPUT_DIR, "bh_pValues", "two_sample_paired_bh_pValues.tsv.gz")
-PAIRED_QC_SUMMARY = os.path.join(BASE_OUTPUT_DIR, "qc_results_paired", "ALL_MAGs_QC_overall_summary.tsv")
+PAIRED_QC_SUMMARY = os.path.join(BASE_OUTPUT_DIR, "qc_results_paired", "ALL_MAGs_positions_QC_overall_summary.tsv")
 
 # Single sample outputs, expanded for each group defined in the config
 SINGLE_SAMPLE_GROUPS = config.get("single_sample_groups", [])
 SINGLE_POSITIONS_FILES = expand(os.path.join(BASE_OUTPUT_DIR, "tested_positions", "single_sample_{group}_mag_positions.tsv.gz"), group=SINGLE_SAMPLE_GROUPS)
 SINGLE_BH_pValues = expand(os.path.join(BASE_OUTPUT_DIR, "bh_pValues", "single_sample_{group}_bh_pValues.tsv.gz"), group=SINGLE_SAMPLE_GROUPS)
-SINGLE_QC_SUMMARY = expand(os.path.join(BASE_OUTPUT_DIR, "qc_results_single_{group}", "ALL_MAGs_QC_overall_summary.tsv"), group=SINGLE_SAMPLE_GROUPS)
+SINGLE_QC_SUMMARY = expand(os.path.join(BASE_OUTPUT_DIR, "qc_results_single_{group}", "ALL_MAGs_positions_QC_overall_summary.tsv"), group=SINGLE_SAMPLE_GROUPS)
 
 # Coverage and allele stats outputs
 # Determine MAG list path (either from config or will be generated)
@@ -500,7 +500,7 @@ rule quality_control_paired:
     Runs quality_control.py on the positions extracted from two-sample paired tests.
     """
     input:
-        script=os.path.join(os.environ["HOME"], "AlleleFlux/alleleflux/scripts/preprocessing/quality_control.py"),
+        script=os.path.join(os.environ["HOME"], "AlleleFlux/alleleflux/scripts/accessory/positions_qc.py"),
         positions=PAIRED_POSITIONS_FILE,
         metadata_dir=config["metadata_dir"],
         fasta=config["fasta"],
@@ -514,14 +514,15 @@ rule quality_control_paired:
     shell:
         """
         python {input.script} \
-            --rootDir {input.metadata_dir} \
+            --metadata_dir {input.metadata_dir} \
             --fasta {input.fasta} \
             --mag_mapping_file {input.mag_mapping} \
             --positions_file {input.positions} \
+            --positions_denominator positions \
             --output_dir {params.outdir} \
             --breadth_threshold {params.breadth} \
+            --coverage_threshold 0 \
             --cpus {threads} \
-            --positions_denominator positions \
             --data_type longitudinal
         """
 
@@ -531,13 +532,13 @@ rule quality_control_single:
     one for each group.
     """
     input:
-        script=os.path.join(os.environ["HOME"], "AlleleFlux/alleleflux/scripts/preprocessing/quality_control.py"),
+        script=os.path.join(os.environ["HOME"], "AlleleFlux/alleleflux/scripts/accessory/positions_qc.py"),
         positions=os.path.join(BASE_OUTPUT_DIR, "tested_positions", "single_sample_{group}_mag_positions.tsv.gz"),
         metadata_dir=config["metadata_dir"],
         fasta=config["fasta"],
         mag_mapping=config["mag_mapping"],
     output:
-        os.path.join(BASE_OUTPUT_DIR, "qc_results_single_{group}", "ALL_MAGs_QC_overall_summary.tsv"),
+        os.path.join(BASE_OUTPUT_DIR, "qc_results_single_{group}", "ALL_MAGs_positions_QC_overall_summary.tsv"),
     params:
         group="{group}",
         outdir=os.path.join(BASE_OUTPUT_DIR, "qc_results_single_{group}"),
@@ -546,12 +547,14 @@ rule quality_control_single:
     shell:
         """
         python {input.script} \
-            --rootDir {input.metadata_dir} \
+            --metadata_dir {input.metadata_dir} \
             --fasta {input.fasta} \
             --mag_mapping_file {input.mag_mapping} \
             --positions_file {input.positions} \
+            --positions_denominator positions \
             --output_dir {params.outdir} \
             --breadth_threshold {params.breadth} \
+            --coverage_threshold 0 \
             --cpus {threads} \
             --data_type single
         """
@@ -674,7 +677,7 @@ rule create_megatable_single:
     """
     input:
         merged_table=os.path.join(BASE_OUTPUT_DIR, "pValue_stats_merged", "single_sample_{group}_merged_table.tsv.gz"),
-        qc_summary=os.path.join(BASE_OUTPUT_DIR, "qc_results_single_{group}", "ALL_MAGs_QC_overall_summary.tsv"),
+        qc_summary=os.path.join(BASE_OUTPUT_DIR, "qc_results_single_{group}", "ALL_MAGs_positions_QC_overall_summary.tsv"),
     output:
         megatable=os.path.join(BASE_OUTPUT_DIR, "megatables", "single_sample_{group}_megatable.tsv.gz"),
     params:

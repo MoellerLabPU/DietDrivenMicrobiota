@@ -27,7 +27,7 @@ The megatable is the comprehensive output of the AlleleFlux analysis pipeline, c
 Each megatable is built by merging, per-position within a MAG:
 - BH-corrected test results (pivoted to wide) from `alleleflux.scripts.preprocessing.p_value_summary`
 - Per-position coverage and allele-frequency statistics from `alleleflux.scripts.accessory.coverage_and_allele_stats`
-- Per-MAG quality-control summaries from `alleleflux.scripts.preprocessing.quality_control`
+- Per-MAG quality-control summaries from `alleleflux.scripts.accessory.positions_qc`
 
 
 ### Two Analysis Types
@@ -127,7 +127,7 @@ Coverage metrics quantify sequencing depth at each position, with stratification
 
 **Coverage statistics are calculated using only QC-passing samples.** The workflow applies breadth threshold filtering through the following mechanism. This is different than the QC metrics described below:
 
-1. **QC Step**: `quality_control.py`generates QC files (`*_QC.tsv`) with a `breadth_threshold_passed` column indicating which samples passed the breadth threshold for each MAG.
+1. **QC Step**: `positions_qc.py` generates QC files (`*_positions_QC.tsv`) with a `breadth_threshold_passed` column indicating which samples passed the breadth threshold for each MAG based on genome-wide breadth.
 
 2. **Coverage Stats Step**: `create_megatable.smk` passes `--qc_dir` to `alleleflux-coverage-allele-stats`, which:
    - Reads the QC files to identify samples that passed breadth threshold
@@ -325,7 +325,7 @@ QC metrics are computed per-MAG (not per-position) and provide information about
 
 ### QC Metrics in Megatable Workflow Context
 
-**The megatable workflow implements dual breadth calculation to enable both position-specific and genome-wide quality assessment.** When a positions file is provided with `positions_denominator="positions"`, the workflow calculates two distinct breadth metrics at the per-sample level:
+**The megatable workflow uses `positions_qc.py` for position-specific quality control with dual breadth calculation.** This enables both position-specific and genome-wide quality assessment. When a positions file is provided with `positions_denominator="positions"`, the workflow calculates two distinct breadth metrics at the per-sample level:
 
 **Dual Breadth Mode (Per-Sample Calculation):**
 1. **`breadth`: Coverage at the **tested positions only**
@@ -341,62 +341,90 @@ QC metrics are computed per-MAG (not per-position) and provide information about
    - Used for breadth threshold filtering
 
 **Quality Filtering Behavior:**
-- Threshold checking uses `breadth_genome`
+- Threshold checking uses `breadth_genome` (genome-wide breadth)
 - Sample-level `breadth_threshold_passed` correctly reflects genome-wide breadth
 - Only samples passing `breadth_genome` threshold are included in aggregated QC summaries
 
+**Key Differences from Full-Genome QC:**
+- **No timepoint validation**: `positions_qc.py` does not check for two_timepoints_passed (not meaningful for position subsets)
+- **No subject/replicate counting**: columns like `subjects_per_group` and `replicates_per_group` are not generated
+- **No length-weighted coverage**: this metric is omitted as it's only meaningful for full genome analysis
+- **Simplified workflow**: focuses on position-specific quality assessment
+
 ### Denominator Considerations
 
-When QC is run with a positions file (as in the megatable workflow):
-- **Denominator mode**: Set to `"positions"` (see [`create_megatable.smk:524`](create_megatable.smk:524))
+When QC is run with a positions file using `positions_qc.py` (as in the megatable workflow):
+- **Denominator mode**: Set to `"positions"` (see `create_megatable.smk` rules `quality_control_paired` and `quality_control_single`)
 - **`breadth` calculation**: Proportion of tested positions with coverage ≥ 1 (denominator = number of specified positions)
 - **`breadth_genome` calculation**: Proportion of ALL genome positions with coverage ≥ 1 (denominator = genome size, calculated BEFORE position filtering)
 - **Average coverage**: Sum of coverage at tested positions / number of tested positions
+- **Median and std coverage**: Calculated from FILTERED positions only
 - **All other coverage metrics**: Calculated from FILTERED positions only, not the entire genome
 
-This means most QC metrics describe quality at the specified positions only, while `breadth_genome` provides genome-wide context.
+This means most QC metrics describe quality at the specified positions only, while `breadth_genome` provides genome-wide context for filtering.
+
+**Metrics NOT available in positions-based QC:**
+- `length_weighted_coverage` (requires full genome profile)
+- `two_timepoints_passed` (not meaningful for position subsets)
+- `subjects_per_group`, `replicates_per_group` (not calculated in positions_qc.py)
 
 ### Overall QC Metrics
 
 These metrics summarize quality across all samples for each MAG.
 
-**Source:** `ALL_MAGs_QC_overall_summary.tsv`
+**Source:** `ALL_MAGs_positions_QC_overall_summary.tsv`
 
-| Column | Description | Calculation Details (the mean is across the samples considered) |
+| Column | Description (means are calculated across samples) | Calculation Details (the mean is across the samples considered) |
 |--------|-------------|-----------------------------------------------------------------|
 | `num_samples` | Total number of samples passing breadth threshold | Samples with breadth_genome ≥ threshold |
 | `breadth_mean` | Mean breadth of coverage at tested positions | Mean proportion of tested positions with coverage ≥ 1 (calculated AFTER position filtering) |
-| `average_coverage_mean` | Mean of average coverage per sample | Mean of (sum coverage at tested positions / number of tested positions) per sample |
+| `breadth_genome_mean` | Mean genome-wide breadth of coverage | Mean proportion of ALL genome positions with coverage ≥ 1 (calculated BEFORE position filtering) |
+| `average_coverage_mean` | Mean of average coverage per sample at tested positions | Mean of (sum coverage at tested positions / number of tested positions) per sample |
+| `average_coverage_genome_mean` | Mean of genome-wide average coverage per sample | Mean of (sum coverage across entire genome / genome size) per sample (calculated BEFORE position filtering) |
 | `median_coverage_mean` | Mean of median coverage per sample | Mean of median coverage at tested positions (zeros excluded per sample) |
 | `median_coverage_including_zeros_mean` | Median including zeros for absent positions | Mean of median across tested positions with zeros for absent positions |
 | `coverage_std_mean` | Mean of coverage standard deviation | Mean of per-sample std at tested positions (zeros excluded) |
 | `coverage_std_including_zeros_mean` | Std including zeros | Mean of per-sample std including zeros for absent positions |
 
-**Note:** `length_weighted_coverage` is omitted when a positions file is used, as it is only meaningful for full genome analysis.
+**Critical Distinction:**
+- **Position-specific metrics** (`breadth_mean`, `average_coverage_mean`, `median_*`, `coverage_std_*`): Calculated from the filtered set of tested positions only
+- **Genome-wide metrics** (`breadth_genome_mean`, `average_coverage_genome_mean`): Calculated from the ENTIRE genome profile before position filtering, providing baseline quality context
+
+**Note:** `length_weighted_coverage`, `subjects_per_group`, and `replicates_per_group` are NOT available in positions-based QC output as they are not calculated by `positions_qc.py`.
 
 ### Group-Stratified QC Metrics
 
-**Source:** `ALL_MAGs_QC_group_summary.tsv` (pivoted)
+**Source:** `ALL_MAGs_positions_QC_group_summary.tsv` (pivoted)
 
 **Pattern:** `{metric}_group_{group}`
 
 **Examples:**
 - `breadth_mean_group_fat` (position-specific breadth)
-- `average_coverage_mean_group_control`
+- `breadth_genome_mean_group_fat` (genome-wide breadth)
+- `average_coverage_mean_group_control` (position-specific coverage)
+- `average_coverage_genome_mean_group_control` (genome-wide coverage)
 - `median_coverage_mean_group_control`
 
-**Note:** Group-stratified `breadth_genome` columns will NOT appear due to the same aggregation bug.
+**Available genome-wide metrics per group:**
+- `breadth_genome_mean_group_{group}` - Genome-wide breadth (BEFORE position filtering)
+- `average_coverage_genome_mean_group_{group}` - Genome-wide average coverage (BEFORE position filtering)
 
 ### Time-Stratified QC Metrics (Paired Analysis Only)
 
-**Source:** `ALL_MAGs_QC_group_time_summary.tsv` (pivoted)
+**Source:** `ALL_MAGs_positions_QC_group_time_summary.tsv` (pivoted)
 
 **Pattern:** `{metric}_group_{group}_time_{time}`
 
 **Examples:**
 - `breadth_mean_group_fat_time_pre` (position-specific breadth)
-- `average_coverage_mean_group_fat_time_end`
+- `breadth_genome_mean_group_fat_time_pre` (genome-wide breadth)
+- `average_coverage_mean_group_fat_time_end` (position-specific coverage)
+- `average_coverage_genome_mean_group_fat_time_end` (genome-wide coverage)
 - `median_coverage_mean_group_control_time_pre`
+
+**Available genome-wide metrics per group and timepoint:**
+- `breadth_genome_mean_group_{group}_time_{time}` - Genome-wide breadth (BEFORE position filtering)
+- `average_coverage_genome_mean_group_{group}_time_{time}` - Genome-wide average coverage (BEFORE position filtering)
 
 
 ### QC Metric Interpretation
@@ -404,9 +432,17 @@ These metrics summarize quality across all samples for each MAG.
 ```
 Example MAG at tested positions:
 - breadth_mean = 0.85 → 85% of tested positions are covered on average
+- breadth_genome_mean = 0.65 → 65% of entire genome is covered on average
 - breadth_mean_group_fat = 0.90 → 90% of tested positions covered in fat group
+- breadth_genome_mean_group_fat = 0.70 → 70% of entire genome covered in fat group
 - average_coverage_mean = 45.2x → Average depth of 45x across tested positions
+- average_coverage_genome_mean = 28.3x → Average depth of 28x across entire genome
 ```
+
+**Interpreting the dual metrics:**
+- Higher `breadth_mean` vs `breadth_genome_mean` suggests tested positions are better covered than the genome average
+- Similar values indicate tested positions are representative of genome-wide coverage
+- `breadth_genome_mean` and `average_coverage_genome_mean` provide quality baseline for the entire MAG, even when analyzing specific positions
 
 ---
 
@@ -424,8 +460,8 @@ Example MAG at tested positions:
 | Coverage grouped | `…_group_<G>`, `…_group_<G>_time_<T>` | group-wise | per variant | Mirrors overall logic within slices |
 | Allele freq overall | `mean_freq_[ACGT]`, `std_freq_[ACGT]` | `n_present` | exclude zeros | Frequencies computed only where covered |
 | Allele freq grouped | `mean_freq_[ACGT]_group_*…` | group-wise | exclude zeros | Same as above within slices |
-| QC overall | `num_samples`, `breadth_mean`, etc. | samples passing breadth_genome threshold | metric-specific | Per-MAG means|
-| QC grouped | `<field>_group_<G>[ _time_<T>]` | samples passing breadth_genome threshold | metric-specific | Flattened pivots by group/time; no `breadth_genome` variants |
+| QC overall | `num_samples`, `breadth_mean`, `breadth_genome_mean`, `average_coverage_mean`, `average_coverage_genome_mean`, etc. | samples passing breadth_genome threshold | metric-specific | Per-MAG means; genome-wide metrics calculated BEFORE filtering |
+| QC grouped | `<field>_group_<G>[ _time_<T>]` | samples passing breadth_genome threshold | metric-specific | Flattened pivots by group/time; includes `breadth_genome_mean` and `average_coverage_genome_mean` variants |
 
 ### Zero-Handling Summary Table
 
@@ -509,7 +545,7 @@ The workflow applies quality control at multiple stages:
    - These appear as per-position rows in the megatable
 
 2. **Per-MAG QC Summary Metrics** (with dual breadth calculation):
-   - Source: `quality_control.py`
+   - Source: `positions_qc.py`
    - Uses `--positions_file` with `--positions_denominator positions`
    - Implements **dual breadth calculation** at per-sample level:
       - **`breadth_genome`**: Count captured BEFORE filtering → used for threshold checking
@@ -517,6 +553,7 @@ The workflow applies quality control at multiple stages:
       - **All other metrics**: Calculated AFTER filtering → all use filtered dataframe
    - Threshold filtering uses genome-wide `breadth_genome`
    - `num_samples` = number of samples passing breadth_genome threshold
+   - Does NOT calculate: `length_weighted_coverage`, `two_timepoints_passed`, `subjects_per_group`, `replicates_per_group`
    - These appear as MAG-level columns in the megatable (all positions from same MAG share same values)
 
 ### Missing Data Handling
@@ -582,5 +619,5 @@ Some columns are dynamically generated based on:
 - Workflow driving merges and naming: `megaTable/create_megatable.smk`
 - P-value summarization and BH: `alleleflux.scripts.preprocessing.p_value_summary`
 - Coverage and allele stats: `alleleflux.scripts.accessory.coverage_and_allele_stats`
-- QC sample metrics and aggregates: `alleleflux.scripts.preprocessing.quality_control`
+- QC sample metrics and aggregates: `alleleflux.scripts.accessory.positions_qc`
 
