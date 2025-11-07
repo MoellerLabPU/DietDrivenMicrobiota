@@ -85,7 +85,11 @@ def _process_and_pivot_pvalue_files(data_directory, p_value_files, merge_keys, f
 
     dup_mask = combined_tidy_df.duplicated(subset=merge_keys + ['label'], keep=False)
     if dup_mask.any():
-        raise ValueError(f"Duplicated rows across p-value files: {combined_tidy_df.loc[dup_mask]}")
+        duplicated_rows = combined_tidy_df.loc[dup_mask]
+        workflow_logger.error(f"Found {dup_mask.sum():,} duplicated rows")
+        # workflow_logger.error(f"Duplicated columns: {duplicated_rows[merge_keys + ['label']].to_string()}")
+        workflow_logger.error(f"Unique duplicate keys:\n{duplicated_rows[merge_keys + ['label']].drop_duplicates().head(10).to_string()}")
+        raise ValueError(f"Duplicated rows across p-value files. See logs for details. First few duplicates:\n{duplicated_rows.head(10)}")
 
     pivoted_wide_df = (
         combined_tidy_df.set_index(merge_keys + ['label'])[['min_p_value', 'q_value']]

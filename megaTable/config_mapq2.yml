@@ -1,0 +1,37 @@
+run_name: "mapq2"
+
+# Input directory for two-sample paired results
+significance_dir_two_sample_paired: "/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_mapq2/longitudinal/significance_tests/two_sample_paired_pre_end-fat_control"
+# Input directory for single-sample results
+significance_dir_single_sample: "/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_mapq2/longitudinal/significance_tests/single_sample_pre_end-fat_control"
+
+# Inputs for quality_control.py
+# Root directory with *_metadata.tsv files
+metadata_dir: "/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_mapq2/longitudinal/inputMetadata/inputMetadata_pre_end-fat_control"
+qc_dir: "/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_mapq2/longitudinal/QC/QC_pre_end-fat_control"
+# Fasta file for MAGs
+# This file is the same as 
+# /scratch/gpfs/AMOELLER/diet_manip/copy_sg4230_scratch/sg4230/popgentoolkits/representative_megamag.fa
+fasta: "/scratch/gpfs/AMOELLER/diet_manip/redo_representative_megamag.fa"
+# MAG to contig mapping file
+# This file is the same as 
+# /scratch/gpfs/AMOELLER/diet_manip/copy_sg4230_scratch/sg4230/popgentoolkits/megamag_mapping.tsv
+mag_mapping: "/scratch/gpfs/AMOELLER/diet_manip/megamag_mapping.tsv"
+
+# p_value summary directory (contains all p_value_summary_*.tsv files)
+p_value_summary_dir: "/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_mapq2/longitudinal/p_value_summary/pre_end-fat_control"
+
+# Output
+output_dir: "/scratch/gpfs/AMOELLER/sidd/diet_manip/mega_table_mapq2"
+
+# Parameters
+breadth_threshold: 0.1
+cpus: 16
+
+# Groups for single sample analysis. The extract_mag_positions.py script
+# will generate a file for each group.
+# Example: ["fat", "control"]
+single_sample_groups: ["fat", "control"]
+# single_sample_groups: ["fat"]
+
+
