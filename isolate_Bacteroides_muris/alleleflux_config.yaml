@@ -1,0 +1,89 @@
+# AlleleFlux Configuration File
+# ============================
+run_name: "Bacteroides_muris"
+log_level: "INFO"
+
+# Input Files
+# ------------
+# Path specifications for all required input data
+input:
+  bam_dir: "/scratch/gpfs/AMOELLER/sidd/diet_manip/isolate_Bacteroides_muris/alignment/sorted"           # Directory containing BAM files (used for backward compatibility)
+  fasta_path: "/scratch/gpfs/AMOELLER/sidd/diet_manip/isolate_Bacteroides_muris/redo_representative_megamag.fa"  # Reference fasta file
+  prodigal_path: "/scratch/gpfs/AMOELLER/diet_manip/cat_representative_megamag_prodigal.fna"  # Prodigal output
+  metadata_path: "/scratch/gpfs/AMOELLER/sidd/diet_manip/isolate_Bacteroides_muris/metadata_for_alleleflux.tsv"
+  gtdb_path: "/scratch/gpfs/AMOELLER/diet_manip/gtdbtk.bac120.summary.tsv"          # GTDB taxonomy information
+  mag_mapping_path: "/scratch/gpfs/AMOELLER/diet_manip/megamag_mapping.tsv"   # Path to MAG-to-contig mapping file with columns: mag_id, contig_id
+
+# Output Directory
+# --------------------
+output:
+  root_dir: "/scratch/gpfs/AMOELLER/sidd/diet_manip/isolate_Bacteroides_muris/alleleflux_output"
+
+# Analysis Configuration
+# -----------------------
+# Core settings that control the type and scope of analysis
+analysis:
+  # Data type - determines the analysis approach
+  data_type: "single"  # Options: "single" or "longitudinal"
+  allele_analysis_only: True  # When True, only runs allele analysis and skips scoring/outlier detection
+
+  # Enable/disable specific analysis modules
+  use_lmm: False            # Linear Mixed Models analysis
+  use_significance_tests: True  # Two-sample and single-sample tests
+  use_cmh: False             # CMH test for categorical data
+
+  timepoints_combinations:
+    - timepoint: ["Pre-Treatment"] 
+    - timepoint: ["End"] 
+
+  groups_combinations:
+    - ["Fat", "Control"]    # Currently active group comparison
+
+# Quality Control Parameters
+# --------------------------
+quality_control:
+  min_sample_num: 1         # Minimum number of samples required for analysis
+  breadth_threshold: 0.1    # Minimum coverage breadth across genome
+  disable_zero_diff_filtering: False  # Whether to keep sites with zero difference
+  coverage_threshold: 0
+
+# Profiling Parameters
+# --------------------
+# Parameters for pileup generation during sample profiling
+profiling:
+  ignore_orphans: True           # Ignore orphan reads (without proper pairs)
+  min_base_quality: 30            # Minimum base quality score to consider
+  min_mapping_quality: 0          # Minimum mapping quality score to consider
+  ignore_overlaps: True           # Ignore overlapping read segments
+
+# Statistical Parameters
+# ----------------------
+statistics:
+  filter_type: "t-test"           # Preprocessing filter: "t-test", "wilcoxon", or "both"
+  preprocess_between_groups: True # Preprocess data for between-groups tests
+  preprocess_within_groups: True  # Preprocess data for within-group tests
+  max_zero_count: 4               # Maximum zeros allowed in single-sample test
+  p_value_threshold: 0.05         # P-value threshold for significance
+  fdr_group_by_mag_id: False      # Apply FDR correction per MAG
+  min_positions_after_preprocess: 1  # Minimum positions after preprocessing
+
+# dN/dS Analysis Parameters
+# -------------------------
+# Configuration for evolutionary rate analysis
+dnds:
+  p_value_column: "q_value"       # Column for filtering: "min_p_value" or "q_value"
+  dn_ds_test_type: "two_sample_paired_tTest"  # Test type for filtering results
+
+
+resources:
+  threads_per_job: 16             # Threads per job (not total threads)
+  mem_per_job: "8G"               # Memory per job. Formats: "8G", "100G", "102400M"
+  time: "24:00:00"                # Wall time limit (HH:MM:SS)
+
+resources_override:
+  profile:                       
+    threads_per_job: 8
+    mem_per_job: "16G"
+    time: "08:00:00"
+  qc:                           
+    mem_per_job: "100G"
