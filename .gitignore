@@ -133,3 +133,5 @@ dmypy.json
 logs/
 .vscode
 .github/chatmodes
+__pycache__/
+.ipynb_checkpoints

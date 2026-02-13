@@ -357,7 +357,7 @@ rule extract_mag_positions:
         single=SINGLE_POSITIONS_FILES,
     params:
         outdir=os.path.join(BASE_OUTPUT_DIR, "tested_positions"),
-        script="../extract_mag_positions.py",
+        script="../scripts/extract_mag_positions.py",
     threads: 1
     shell:
         """

@@ -22,7 +22,7 @@ The workflow processes allele frequency data from metagenomic samples, filtering
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         STEP 1: EXTRACT POSITIONS                           │
 │  Rule: extract_mag_positions                                                │
-│  Script: ../extract_mag_positions.py                                        │
+│  Script: ../scripts/extract_mag_positions.py                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Extracts unique (MAG, contig, position) tuples from significance tests     │
 │  → tested_positions/two_sample_paired_mag_positions.tsv.gz                  │
@@ -239,7 +239,7 @@ The megatables contain all information needed for downstream analysis:
 
 ## Configuration
 
-### Required Config Parameters (`config.yml`):
+### Required Config Parameters (`config.yml`)
 
 ```yaml
 # Run identifier for logging
@@ -425,11 +425,13 @@ The workflow defines several helper functions for data processing:
 ## Logging
 
 The workflow uses a custom logger (`workflow_logger`) that:
+
 - Does not interfere with Snakemake's internal logging
 - Formats numbers with thousand separators for readability
 - Tracks progress through each step with informative messages
 
 Example log output:
+
 ```
 2025-10-08 14:30:15 [INFO] Loaded BH p-values with 1,234,567 positions
 2025-10-08 14:30:20 [INFO] Found 273 unique MAGs in p-value table
@@ -534,4 +536,3 @@ conda install -c bioconda alleleflux
 | `create_merged_table_single` | 5 | BH p-values + coverage stats | Merged table (per group) | Pool workers |
 | `create_megatable_paired` | 6 | Merged table + QC summaries | Final megatable | Sequential |
 | `create_megatable_single` | 6 | Merged table + QC summaries | Final megatable (per group) | Sequential |
-
