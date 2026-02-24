@@ -1,0 +1,31 @@
+# process raw data, assemble contigs, and bin mags with https://github.com/CUMoellerLab/sn-mg-pipeline
+
+# preprend all file names with sample name for downstream analysis
+
+# Quality control
+
+
+singularity exec --bind $PWD --pwd $PWD /programs/gunc-1.0.6/gunc.sif gunc download_db --db gtdb ./ 
+
+singularity exec --bind $PWD --pwd $PWD /programs/gunc-1.0.6/gunc.sif gunc run --input_dir /diet_manip/allbins \
+--db_file /workdir/dbs/gunc/gunc_db_gtdb95.dmnd \
+--threads 56 --out_dir /diet_manip/gunc
+
+
+singularity exec --bind $PWD --pwd $PWD /programs/gunc-1.0.6/gunc.sif \
+gunc run --input_dir /diet_manip/allbins \
+--db_file /workdir/dbs/gunc/gunc_db_gtdb95.dmnd \
+--threads 64 --out_dir /diet_manip/gunc
+
+
+# move failed gunc bins out -- we will not use these for downstream analysis
+
+# CheckM2
+  
+checkm2 predict --threads 64 --input /diet_manip/allbins/*.fa --output-directory /diet_manip/checkm2 --database_path /workdir/dbs/diamond/CheckM2_database/uniref100.KO.1.dmnd
+
+# move all bins <=90% completion and =>5% contamination to a bad bins folder-- we will not use these for downstream analysis
+
+
+
+  
