@@ -13,6 +13,55 @@ gtdbtk classify --genome_dir /diet_manip/allbins --align_dir /diet_manip/gtdbtk 
 #run drep 
 dRep dereplicate /diet_manip/drep95 -p 64 -g /diet_manip/allbins/*.fa --genomeInfo /diet_manip/drep/genome_info_checkm.csv -pa 0.90 -sa 0.95
 
-##insert bowtie code
+# cat all the representative MAGs from drep into a "megamag"
 
-##insert prodigal code, functional, etc. etc. 
+#bowtie2
+bowtie2-build /diet_manip/bt2/redo_representative_megamag.fa /diet_manip/bt2/redo_representative_megamag -p 64
+
+
+for fastq_file in /workdir/slg/sn-mg-pipeline/output/qc/host_filter/nonhost/*.fastq.gz; do
+    filename=$(basename "$fastq_file")
+    base=${filename%%R[1-2]*}
+    sam_file="/diet_manip/bt2/for_instrain/${base}sam"
+    nice -n 2 bowtie2 -x /diet_manip/bt2/redo_representative_megamag -1 "/workdir/slg/sn-mg-pipeline/output/qc/host_filter/nonhost/${base}R1.fastq.gz" -2 "/workdir/slg/sn-mg-pipeline/output/qc/host_filter/nonhost/${base}R2.fastq.gz" -S "$sam_file" -p 64
+done
+
+
+#prodigal
+
+find /diet_manip/bt2/representative_mags -name '*.fa' | \
+  parallel -j 100 nice -n 2 prodigal -i {} \
+    -d /diet_manip/prodigal_per_mag/{/.}.fna \
+    -a /diet_manip/prodigal_per_mag/{/.}.faa \
+    -f gbk \
+    -o /diet_manip/prodigal_per_mag/{/.}.gbk
+
+cat *.fna > cat_representative_megamag_prodigal.fna
+cat *.faa > cat_representative_megamag_prodigal.faa
+
+#recognizer COG annotation
+recognizer -f cat_representative_megamag_prodigal.faa -o recognizer
+
+
+
+# instrain
+
+find /diet_manip/bt2/for_instrain -name "*.sam" | parallel -j 24 '
+    sam_base=$(basename {} .sam);
+    samtools view -bS {} > /diet_manip/bt2/for_instrain/$sam_base.bam'
+
+
+
+find /diet_manip/bt2/for_instrain -name "*.bam" | parallel -j 8 '
+    bam_file={}; 
+    bam_base=$(basename "$bam_file" .bam);
+    
+    inStrain profile \
+        "$bam_file" \
+        /diet_manip/bt2/redo_representative_megamag.fa \
+        -o /diet_manip/instrain/"${bam_base}.IS" \
+        -p 8 \
+        -g /diet_manip/prodigal/redo_representative_megamag.fna \
+        -s /diet_manip/files/scaffoldtobin.stb \
+        --database_mode
+'
