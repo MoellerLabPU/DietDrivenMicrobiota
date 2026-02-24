@@ -1,0 +1,18 @@
+#run GTDBTK
+
+gtdbtk identify --genome_dir /diet_manip/allbins --out_dir /diet_manip/gtdbtk --write_single_copy_genes --cpus 64 -x .fa
+
+gtdbtk align --identify_dir /diet_manip/gtdbtk --out_dir /diet_manip/gtdbtk  --skip_gtdb_refs --cpus 64
+
+gtdbtk classify --genome_dir /diet_manip/allbins --align_dir /diet_manip/gtdbtk --mash_db /diet_manip/gtdbtk --out_dir /diet_manip/gtdbtk -x .fa --cpus 64
+
+#build phylogeny with iqtree
+
+/programs/iqtree-2.2.2.6-Linux/bin/iqtree2 -s /diet_manip/gtdbtk/align/gtdbtk.bac120.user_msa.fasta --seed 0 --prefix mouse_MAGs --verbose -T 64 -B 1000 -mset LG,WAG
+
+#run drep 
+dRep dereplicate /diet_manip/drep95 -p 64 -g /diet_manip/allbins/*.fa --genomeInfo /diet_manip/drep/genome_info_checkm.csv -pa 0.90 -sa 0.95
+
+##insert bowtie code
+
+##insert prodigal code, functional, etc. etc. 
