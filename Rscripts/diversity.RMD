@@ -1,0 +1,701 @@
+---
+title: "Diet Manipulation Experiment"
+output: github_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{libraries}
+
+library(vegan)
+library(ggplot2)
+library(phyloseq)
+library(ape)
+library(qiime2R)
+library(tidyverse)
+library(dplyr)
+library(phytools)
+library(data.table)
+library(reshape2)
+library(picante)
+library(stringr)
+library(ggtree)
+library(compositions)
+library(ANCOMBC)
+library(MKinfer)
+library(picante) #version 1.8.2
+
+```
+
+
+####calculate relative abundance of the filtered points####
+
+#used fastq stats to count the number of reads in each host filtered sample
+fastq_stats <- read_tsv("fastq_stats.tsv")
+
+#make new column and copy over the values we need to calculate relative abundance
+
+profiles <- lapply(profiles, function(profile) {
+    profile[["relative_abundance"]] <- profile[["filtered_read_pair_count"]]
+    profile
+})
+
+fastq_stats$file <- gsub("/sn-mg-pipeline/output/qc/host_filter/nonhost/|\\.R1\\.fastq\\.gz", "", fastq_stats$file)
+
+
+#divide filtered_read_pair_count by that value
+
+#loop through profiles
+profiles <- lapply(names(profiles), function(profile_name) {
+  
+  # Find the corresponding num_seqs from fastq_stats based on file name
+  num_seqs <- fastq_stats$num_seqs[fastq_stats$file == profile_name]
+
+  # Divide relative_abundance by num_seqs for the corresponding profile
+  if (length(num_seqs) == 1) {
+    profiles[[profile_name]]$relative_abundance <- profiles[[profile_name]]$relative_abundance / num_seqs
+  }
+  
+  return(profiles[[profile_name]])
+})
+
+
+names(profiles) <- fastq_stats$file
+
+##add in missing genomes for each sample with 0 values
+
+
+#Remove the .fa from the genome name in each profile
+profiles <- lapply(profiles, function(profile) {
+  if ("genome" %in% colnames(profile)) {
+    profile$genome <- sub("\\.fa$", "", profile$genome)  # Remove the .fa suffix
+  } else {
+    warning("No 'genome' column found in one of the dataframes.")
+  }
+  return(profile)
+})
+
+#Add missing genomes with relative_abundance set to 0
+profiles <- lapply(profiles, function(profile) {
+  # Find genomes in md2$user_genome that are not in the profile
+  missing_genomes <- setdiff(md2$user_genome, profile$genome)
+
+  if (length(missing_genomes) > 0) {
+    # Create a df for missing genomes with relative_abundance = 0
+    missing_df <- data.frame(
+      genome = missing_genomes,
+      relative_abundance = 0,  # Set relative_abundance to 0
+      matrix(NA, nrow = length(missing_genomes), ncol = ncol(profile) - 2)  
+    )
+    
+    colnames(missing_df) <- colnames(profile)
+
+    # Bind the missing_df to the profile
+    profile <- rbind(profile, missing_df)
+  }
+
+  return(profile)
+})
+
+
+profiles <- lapply(profiles, function(profile) { profile$relative_abundance[is.na(profile$relative_abundance)] <- 0; return(profile) })
+
+
+#now to normalize the relative abundance by genome size, need to divide each by the genome size
+
+#get the genome size of each genome with count_genome_size.sh
+
+genome_size <- read_tsv("representative_genome_size.tsv")
+
+
+#function to adjust relative abundance based on genome size
+adjust_relative_abundance <- function(profile, genome_size) {
+    # merge profile with genome_size
+    merged_profile <- merge(profile, genome_size, by = "genome", all.x = TRUE)
+    
+    # debugging
+    if (any(is.na(merged_profile$genome_length))) {
+        warning("Some genomes are missing genome_length.")
+        print(merged_profile[is.na(merged_profile$genome_length), ])
+    }
+    
+    #divide relative_abundance by genome_length
+    merged_profile$relative_abundance <- merged_profile$relative_abundance / merged_profile$genome_length
+    
+    return(merged_profile)
+}
+
+# do this for all profiles
+profiles <- lapply(profiles, adjust_relative_abundance, genome_size = genome_size)
+
+#now multiply that by (100/sum of all normalized abundances)
+for (profile_name in names(profiles)) {
+  
+  profile <- profiles[[profile_name]]
+  
+  #get total sum of relative abundances
+  total_abundance <- sum(profile$relative_abundance, na.rm = TRUE)
+  
+  #normalize
+  profile$relative_abundance <- profile$relative_abundance * (100 / total_abundance)
+  
+  profiles[[profile_name]] <- profile
+}
+
+#make a relative abundance matrix
+
+#get genome names
+all_genomes <- unique(unlist(lapply(profiles, function(profile) profile$genome)))
+
+#make empty matrix
+relative_abundance_matrix <- matrix(NA, nrow = length(all_genomes), ncol = length(profiles),
+                                    dimnames = list(all_genomes, names(profiles)))
+
+#fill with rel abund
+for (profile_name in names(profiles)) {
+  
+  # Access the profile
+  profile <- profiles[[profile_name]]
+  
+  # Match the genome names in this profile with the matrix row names (all_genomes)
+  genome_names <- match(profile$genome, all_genomes)
+  
+  # Fill in the matrix for the corresponding column (profile_name) with the relative abundance
+  relative_abundance_matrix[genome_names, profile_name] <- profile$relative_abundance
+}
+
+#filter out blanks
+relative_abundance_matrix <- relative_abundance_matrix[, !colnames(relative_abundance_matrix) %in% c("BLANK", "EXT_BLANK")]
+
+relative_abundance_matrix[is.na(relative_abundance_matrix)] <- 0
+
+
+#should all = 100 if done correctly
+colSums((relative_abundance_matrix))
+
+#### Alpha Diversity Analysis ####
+
+# Long format and get metadata 
+relative_abundance_long <- melt(relative_abundance_matrix)
+colnames(relative_abundance_long) <- c("genome", "sample", "relative_abundance")
+
+colnames(md2) <- c("genome", "classification", "secondary_cluster", "number_members")
+relative_abundance_long <- merge(relative_abundance_long, md2, by = "genome")
+
+md_clean <- md %>%
+  select(-genome)
+
+relative_abundance_long <- relative_abundance_long %>%
+  left_join(mouse_md %>% distinct(sample, .keep_all = TRUE), by = "sample")
+
+
+# assume relative_abundance_long is already in your environment
+
+#option to exclude post timepoints
+include_post <- TRUE   # FALSE will drop control_post & fat_post
+
+diet_levels <- if (include_post) {
+  c("control_pre","control_post","control_end",
+    "fat_pre","fat_post","fat_end")
+} else {
+  c("control_pre","control_end","fat_pre","fat_end")
+}
+
+# clean md
+md3_clean <- md3 %>%
+  mutate(mouseID = gsub(" ", "", mouseID)) %>%
+  select(sample_id, mouseID, diet)
+
+# build tax and sample long format tables
+tax_df_long <- relative_abundance_long %>%
+  separate(
+    classification,
+    into = c("Domain","Phylum","Class","Order","Family","Genus","Species"),
+    sep    = ";",
+    remove = FALSE
+  ) %>%
+  pivot_longer(
+    Domain:Species,
+    names_to  = "Taxonomic_Level",
+    values_to = "Taxon"
+  ) %>%
+  group_by(sample, Taxonomic_Level, Taxon) %>%
+  summarise(
+    relative_abundance = sum(relative_abundance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(md3_clean, by = c("sample" = "sample_id"))
+
+# keep family only, option to drop post here
+family_df <- tax_df_long %>%
+  filter(Taxonomic_Level == "Family")
+
+if (!include_post) {
+  family_df <- family_df %>%
+    filter(!diet %in% c("control_post","fat_post"))
+}
+
+# fat_pre to fat_end change calc
+taxa_changes <- family_df %>%
+  filter(diet %in% c("fat_pre","fat_end")) %>%
+  group_by(Taxon, diet) %>%
+  summarise(mean_abundance = mean(relative_abundance, na.rm = TRUE), .groups="drop") %>%
+  pivot_wider(
+    names_from = diet,
+    values_from = mean_abundance,
+    values_fill = 0
+  ) %>%
+  mutate(change = fat_end - fat_pre)
+
+
+taxa_levels <- taxa_changes %>%
+  arrange(desc(abs(change))) %>%
+  pull(Taxon)
+
+family_df <- family_df %>%
+  mutate(
+    Taxon = factor(Taxon, levels = taxa_levels),
+    diet  = factor(diet,  levels = diet_levels)
+  )
+
+#colors
+
+manual_colors <- c(
+  "f__Acutalibacteraceae"   = "red",
+  "f__Anaeroplasmataceae"   = "green",
+  "f__Bacteroidaceae"       = "lightblue",
+  "f__Borkfalkiaceae"       = "orange",
+  "f__CAG-508"              = "purple",
+  "f__CAG-552"              = "yellow2",
+  "f__Christensenellaceae"  = "pink",
+  "f__Clostridiaceae"       = "pink4",
+  "f__Desulfovibrionaceae"  = "cyan",
+  "f__Erysipelotrichaceae"  = "magenta",
+  "f__Helicobacteraceae"    = "hotpink",
+  "f__Lachnospiraceae"      = "green4",
+  "f__Lactobacillaceae"     = "steelblue3",
+  "f__Marinifilaceae"       = "darkblue",
+  "f__Micrococcaceae"       = "darkgray",
+  "f__Mucispirillaceae"     = "red3",
+  "f__Muribaculaceae"       = "lightblue4",
+  "f__Mycobacteriaceae"     = "lightgreen",
+  "f__Nanosyncoccaceae"     = "lightpink",
+  "f__Oscillospiraceae"     = "turquoise",
+  "f__P3"                   = "gold",
+  "f__RUG14156"             = "pink2",
+  "f__Rikenellaceae"        = "navy",
+  "f__Ruminococcaceae"      = "maroon",
+  "f__Staphylococcaceae"    = "skyblue",
+  "f__Streptococcaceae"     = "lavender",
+  "f__Turicibacteraceae"    = "thistle",
+  "f__UBA1242"              = "peachpuff",
+  "f__UBA3700"              = "peru",
+  "f__UBA5755"              = "purple",
+  "f__UBA660"               = "yellowgreen",
+  "f__UBA932"               = "steelblue4"
+)
+
+
+p <- ggplot(family_df, aes(
+    x    = mouseID,
+    y    = relative_abundance,
+    fill = Taxon
+  )) +
+  geom_bar(stat="identity", position="stack") +
+  facet_wrap(~ diet, scales="free_x") +
+  scale_fill_manual(values = manual_colors) +
+  labs(
+    title    = "Family-level Taxa Barplot",
+    subtitle = "Families ordered by |fat_end – fat_pre| change",
+    x        = "Mouse ID",
+    y        = "Relative Abundance (%)"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x     = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom",
+    legend.key.size = unit(0.3, "cm")
+  )
+
+print(p)
+
+
+
+#list average abundance for each species by diet
+# Compute mean relative abundance for each genome in each diet group while keeping the full taxonomy
+genome_diet_abundance <- relative_abundance_long %>%
+  group_by(genome, classification, diet) %>%
+  summarise(mean_relative_abundance = mean(relative_abundance, na.rm = TRUE), .groups = "drop")
+
+
+genome_diet_abundance
+
+
+####
+
+#shannon#######
+
+
+
+shannon_diversity_df <- data.frame(
+    sample = colnames(relative_abundance_matrix),
+    shannon_index = diversity(relative_abundance_matrix_t, index = "shannon")
+)
+
+
+diversity_df <- merge(mouse_md, shannon_diversity_df, by = "sample")
+
+# Ensure the diet column is a factor with the desired order
+diversity_df$diet <- factor(diversity_df$diet, levels = c(
+  "control_pre", "control_post", "control_end", 
+  "fat_pre", "fat_post", "fat_end"
+))
+
+
+p<- ggplot(diversity_df, aes(x = diet, y = shannon_index, fill = diet)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) + # Boxplot with transparency
+  geom_jitter(width = 0.2, size = 2, alpha = 0.5, color = "black") + # Add individual points
+  labs(title = "Shannon Diversity Index by Diet", 
+       x = "Diet Group", 
+       y = "Shannon Diversity") +
+  scale_fill_manual(values = c(
+  "control_end" = "#674ED6",
+  "control_post" = "#648FFF",
+  "control_pre" = "#009E73",
+  "fat_end" = "#FF6C0B",
+  "fat_post" = "#EA2284",
+  "fat_pre" = "#FFC107"
+)) + theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p
+
+
+
+#stats
+set.seed(123)
+
+
+mouse_md$diet_actual <- ifelse(
+  mouse_md$diet %in% c("control_pre", "control_post", "control_end", "fat_pre"),
+  "control_actual",
+  ifelse(mouse_md$diet == "fat_post", "fat_post",
+         ifelse(mouse_md$diet == "fat_end", "fat_end", "fat_actual"))
+)           
+
+
+# Perform pairwise Wilcoxon tests
+pairwise_wilcox <- pairwise.wilcox.test(diversity_df$shannon_index, diversity_df$diet, p.adjust.method = "BH")  # Adjusting for multiple comparisons using Benjamini-Hochberg
+
+# Display the results
+print(pairwise_wilcox)
+
+
+#summary stats
+
+
+diversity_summary_stats <- relative_abundance_long %>%
+  filter(relative_abundance > 0) %>%
+  group_by(diet) %>%
+  summarize(
+    genomes_mean = mean(n_distinct(genome)),
+    genomes_median = median(n_distinct(genome)),
+    phyla_mean = mean(n_distinct(Phylum)),
+    phyla_median = median(n_distinct(Phylum)),
+    class_mean = mean(n_distinct(Class)),
+    class_median = median(n_distinct(Class)),
+    order_mean = mean(n_distinct(Order)),
+    order_median = median(n_distinct(Order)),
+    family_mean = mean(n_distinct(Family)),
+    family_median = median(n_distinct(Family)),
+    genus_mean = mean(n_distinct(Genus)),
+    genus_median = median(n_distinct(Genus)),
+    species_mean = mean(n_distinct(Species)),
+    species_median = median(n_distinct(Species))
+  )
+
+
+
+
+```
+
+
+
+```{ r ancombc2}
+
+
+
+####get count data that is scaled by genome size#### 
+
+# Remove profiles that don't have the genome col
+profiles <- profiles[sapply(profiles, function(profile) "genome" %in% colnames(profile))]
+
+# Get all unique genome namesd
+genome_names <- unique(unlist(lapply(profiles, function(profile) profile$genome)))
+
+genome_scaled_counts <- matrix(0, nrow = length(genome_names), ncol = length(profiles))
+rownames(genome_scaled_counts) <- genome_names # Set row names as genomes
+colnames(genome_scaled_counts) <- names(profiles) # Set column names as profile names
+
+# Fill the matrix with filtered_read_pair_counts
+for (profile_name in names(profiles)) {
+    profile <- profiles[[profile_name]]
+    for (genome in profile$genome) {
+        count <- profile$filtered_read_pair_count[profile$genome == genome] # Get the filtered read pair count for the genome
+        genome_scaled_counts[genome, profile_name] <- count # Fill the matrix
+    }
+}
+
+# Scale by genome size and multiply by 10,000 to make rounding easier
+for (genome in rownames(genome_scaled_counts)) {
+    if (genome %in% genome_size$genome) { # Check if genome exists in genome_size
+        genome_length <- genome_size$genome_length[genome_size$genome == genome] # Get the genome length
+        genome_scaled_counts[genome, ] <- (genome_scaled_counts[genome, ] / genome_length) * 10000 # Scale counts
+    }
+}
+
+#round and make NAs = 0 
+genome_scaled_counts[is.na(genome_scaled_counts)] <- 0
+genome_scaled_counts <- round(genome_scaled_counts)
+
+
+print(genome_scaled_counts)
+
+ 
+
+####make phyloseq object####
+
+
+genome_scaled_counts <- genome_scaled_counts[, rownames(mouse_md), drop = FALSE]
+
+
+otu_table <- otu_table(genome_scaled_counts, taxa_are_rows = TRUE)
+phylo_tree <- read.tree("mouse_MAGs.contree")
+sample_data <- sample_data(mouse_md)
+
+physeq_ancom <- phyloseq(otu_table, phylo_tree, sample_data)
+
+#run ancombc2
+
+run_ancombc2 <- function(physeq, group_name) {
+  res <- tryCatch({
+    ancombc2(
+      data = physeq,
+      assay_name = "counts",
+      fix_formula = "diet",
+      rand_formula = "(1|cage) + (1|Sex)",
+      p_adj_method = "holm",
+      prv_cut = 0.1,
+      lib_cut = 0,
+      group = "diet",
+      struc_zero = FALSE,
+      lme_control = lme4::lmerControl(),
+      neg_lb = FALSE,
+      alpha = 0.05,
+      dunnet = TRUE
+    )
+  }, error = function(e) {
+    message("Error occurred for group: ", group_name, " with error: ", e$message)
+    return(NULL)
+  })
+  return(res)
+}
+
+
+
+# Subset mouse_md by diet groups
+control_md <- subset(mouse_md, diet %in% c("control_pre", "control_post", "control_end"))
+fat_md <- subset(mouse_md, diet %in% c("fat_pre", "fat_post", "fat_end"))
+rownames(control_md) <- control_md$sample
+rownames(fat_md) <- fat_md$sample
+# Subset matrix by samples in each group
+control_counts <- genome_scaled_counts[, rownames(control_md)]
+fat_counts <- genome_scaled_counts[, rownames(fat_md)]
+
+# make OTU tables
+control_otu <- otu_table(control_counts, taxa_are_rows = TRUE)
+fat_otu <- otu_table(fat_counts, taxa_are_rows = TRUE)
+
+# Create sample data
+control_sample_data <- sample_data(control_md)
+fat_sample_data <- sample_data(fat_md)
+
+# Create phyloseq objects
+control_physeq <- phyloseq(control_otu, control_sample_data)
+fat_physeq <- phyloseq(fat_otu, fat_sample_data)
+
+# Ensure the 'diet' factor levels are correctly set
+sample_data(control_physeq)$diet <- factor(sample_data(control_physeq)$diet, levels = c("control_pre", "control_post", "control_end"))
+sample_data(fat_physeq)$diet <- factor(sample_data(fat_physeq)$diet, levels = c("fat_pre", "fat_post", "fat_end"))
+
+
+
+
+##### Run ANCOMBC2 for control and fat groups####
+control_res <- run_ancombc2(control_physeq, "control")
+fat_res <- run_ancombc2(fat_physeq, "fat")
+
+# Function to extract and handle results with correct naming
+extract_results <- function(res, group) {
+  if (is.null(res)) {
+    return(NULL)
+  }
+  
+  combined_res <- list()
+  
+  # Check if each result exists and rename columns appropriately
+  if (!is.null(res$res_dunn)) {
+    colnames(res$res_dunn) <- paste0("dunn_", colnames(res$res_dunn))
+    combined_res$res_dunn <- res$res_dunn
+  }
+  
+  if (!is.null(res$res_diff)) {
+    colnames(res$res_diff) <- paste0("diff_", colnames(res$res_diff))
+    combined_res$res_diff <- res$res_diff
+  }
+  
+  if (!is.null(res$passed_ss)) {
+    colnames(res$passed_ss) <- paste0("passed_ss_", colnames(res$passed_ss))
+    combined_res$passed_ss <- res$passed_ss
+  }
+  
+  # Combine results into a data frame
+  combined_res_df <- do.call(cbind, combined_res)
+  
+  # Rename columns to reflect the group
+  colnames(combined_res_df) <- gsub("diet", paste0(group, "_diet"), colnames(combined_res_df))
+  
+  return(combined_res_df)
+}
+
+# Extract and combine results
+res_list <- list()
+if (!is.null(control_res)) {
+  res_list$control <- extract_results(control_res, "control")
+}
+if (!is.null(fat_res)) {
+  res_list$fat <- extract_results(fat_res, "fat") }
+
+# Print combined results
+print(res_list)
+
+
+#volcano plot
+
+str(res_list)
+
+# Extract data from res_list for each comparison group
+control_post_vs_pre <- res_list$control[, c("res_dunn.dunn_lfc_control_dietcontrol_post", "res_dunn.dunn_p_control_dietcontrol_post", "res_dunn.dunn_q_control_dietcontrol_post")]
+control_end_vs_pre <- res_list$control[, c("res_dunn.dunn_lfc_control_dietcontrol_end", "res_dunn.dunn_p_control_dietcontrol_end", "res_dunn.dunn_q_control_dietcontrol_end")]
+fat_post_vs_pre <- res_list$fat[, c("res_dunn.dunn_lfc_fat_dietfat_post", "res_dunn.dunn_p_fat_dietfat_post", "res_dunn.dunn_q_fat_dietfat_post")]
+fat_end_vs_pre <- res_list$fat[, c("res_dunn.dunn_lfc_fat_dietfat_end", "res_dunn.dunn_p_fat_dietfat_end", "res_dunn.dunn_q_fat_dietfat_end")]
+
+
+colnames(control_post_vs_pre) <- colnames(control_end_vs_pre) <- colnames(fat_post_vs_pre) <- colnames(fat_end_vs_pre) <- c("LFC", "p_value", "q_value")
+
+# Add comparison group labels
+control_post_vs_pre$comparison_group <- "Control_Post_vs_Pre"
+control_end_vs_pre$comparison_group <- "Control_End_vs_Pre"
+fat_post_vs_pre$comparison_group <- "Fat_Post_vs_Pre"
+fat_end_vs_pre$comparison_group <- "Fat_End_vs_Pre"
+
+# Combine all into plot_df
+plot_df <- rbind(control_post_vs_pre, control_end_vs_pre, fat_post_vs_pre, fat_end_vs_pre)
+
+# Filter out points with -log10(p_value) equal to 0 or -log10(q_value) equal to 0
+plot_df_p <- plot_df[plot_df$p_value != 1, ]
+plot_df_q <- plot_df[plot_df$q_value != 1, ]
+
+### OR plot_df_p and plot_df_q without filtering out points
+#plot_df_p <- plot_df
+#plot_df_q <- plot_df
+
+# Create a column for overrepresented and underrepresented groups
+plot_df_p$group <- ifelse(plot_df_p$LFC > 0, "overrepresented", "underrepresented")
+plot_df_q$group <- ifelse(plot_df_q$LFC > 0, "overrepresented", "underrepresented")
+
+# Define colors for each comparison group
+comparison_colors <- c("Control_Post_vs_Pre" = "#648FFF",  
+                       "Control_End_vs_Pre" = "#674ED6",    
+                       "Fat_Post_vs_Pre" = "#EA2284",      
+                       "Fat_End_vs_Pre" = "#FF6C0B")       
+
+# Create a function to draw polygons around points
+draw_polygon <- function(data, color) {
+  hull <- data[chull(data$LFC, -log10(data$p_value)), ]
+  geom_polygon(data = hull, aes(x = LFC, y = -log10(p_value)), fill = NA, color = color, size = 1, linetype = "solid")
+}
+
+# Create the volcano plot for p_value
+volcano_p <- ggplot(plot_df_p, aes(x = LFC, y = -log10(p_value), color = comparison_group)) +
+  geom_point(size = 2, alpha = 0.8) +  # smaller points with transparency
+  scale_color_manual(values = comparison_colors) +
+  labs(
+    x = "Log Fold Change",
+    y = "-log10(p_value)",
+    color = "Comparison Group"
+  ) +
+  theme_classic()
+
+# Add polygons around overrepresented and underrepresented groups for each comparison group for p_value
+for (group in unique(plot_df_p$comparison_group)) {
+  for (status in c("overrepresented", "underrepresented")) {
+    group_data <- plot_df_p %>% filter(comparison_group == !!group & group == !!status)
+    if (nrow(group_data) > 2) {  # Need at least 3 points to draw a polygon
+      volcano_p <- volcano_p + draw_polygon(group_data, comparison_colors[group])
+    }
+  }
+}
+
+# Create a function to draw polygons around points for q_value
+draw_polygon_q <- function(data, color) {
+  hull <- data[chull(data$LFC, -log10(data$q_value)), ]
+  geom_polygon(data = hull, aes(x = LFC, y = -log10(q_value)), fill = NA, color = color, size = 1, linetype = "solid")
+}
+
+# Create the volcano plot for q_value
+volcano_q <- ggplot(plot_df_q, aes(x = LFC, y = -log10(q_value), color = comparison_group)) +
+  geom_point(size = 2, alpha = 0.8) +  # smaller points with transparency
+  scale_color_manual(values = comparison_colors) +
+  labs(
+    x = "Log Fold Change",
+    y = "-log10(q_value)",
+    color = "Comparison Group"
+  ) +
+  theme_classic()
+
+# Add polygons around overrepresented and underrepresented groups for each comparison group for q_value
+for (group in unique(plot_df_q$comparison_group)) {
+  for (status in c("overrepresented", "underrepresented")) {
+    group_data <- plot_df_q %>% filter(comparison_group == !!group & group == !!status)
+    if (nrow(group_data) > 2) {  # Need at least 3 points to draw a polygon
+      volcano_q <- volcano_q + draw_polygon_q(group_data, comparison_colors[group])
+    }
+  }
+}
+
+# Display the plots
+print(volcano_p)
+print(volcano_q)
+
+
+#ancom dfs with results and taxonomy to label points 
+
+# Merge control results with md2 based on taxon and user_genome
+control_results <- res_list$control
+control_merged <- merge(control_results, md2, by.x = "res_dunn.dunn_taxon", by.y = "user_genome", all.x = TRUE)
+
+# Merge fat results with md2 based on taxon and user_genome
+fat_results <- res_list$fat
+fat_merged <- merge(fat_results, md2, by.x = "res_dunn.dunn_taxon", by.y = "user_genome", all.x = TRUE)
+
+full_ancom <- merge(control_merged, fat_merged, by.x = "res_dunn.dunn_taxon", by.y = "res_dunn.dunn_taxon", all = TRUE)
+
+
+```
+
