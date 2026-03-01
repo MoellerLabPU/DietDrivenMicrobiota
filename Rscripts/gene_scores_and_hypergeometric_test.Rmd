@@ -1,0 +1,647 @@
+```{r bh plotting and hypergeometric}
+
+
+#libraries
+library(dplyr)
+library(readr)
+library(stringr)
+library(tidyr)
+library(purrr)
+library(forcats)
+library(tibble)
+library(writexl)
+
+#filter
+
+#COG annotations
+recognizer <- read_tsv("reCOGnizer_results.tsv")
+
+#from perm.t.test clustering analysis on popANI values
+sweeps <- read_tsv("sweeps.tsv")
+
+
+
+
+# normalize recognizer result columns
+
+recognizer <- recognizer %>%
+  mutate(qseqid = str_replace(qseqid, "_#.*$", "")) %>%
+  rename(
+    db_id                       = `DB ID`,
+    protein_description         = `Protein description`,
+    db_description              = `DB description`,
+    general_functional_category = `General functional category`,
+    functional_category         = `Functional category`
+  ) %>%
+  rename_with(~ str_to_lower(.) %>% str_replace_all("\\s+", "_")) %>%
+  select(
+    qseqid,
+    db_id,
+    protein_description,
+    db_description,
+    general_functional_category,
+    functional_category
+  )
+
+
+
+#load files
+read_gene_score_file <- function(f, suffix_regex) {
+  df <- readr::read_tsv(
+    f,
+    col_types = readr::cols(.default = readr::col_character()),
+    na = c("", "NA", "NaN", "nan", "NULL")
+  )
+
+  # Ensure gene_id exists
+  if (!("gene_id" %in% names(df))) {
+    stop("No gene_id column in file: ", f)
+  }
+
+  # Convert every non-gene_id column to numeric (robust to occasional junk)
+  df <- df %>%
+    mutate(across(
+      .cols = -gene_id,
+      .fns  = ~ suppressWarnings(as.numeric(.x))
+    ))
+
+  mag <- stringr::str_remove(basename(f), suffix_regex)
+  mutate(df, MAG_ID = mag)
+}
+
+load_gene_dir <- function(dir, file_pattern = "\\.tsv$", suffix_regex) {
+  files <- list.files(dir, pattern = file_pattern, full.names = TRUE)
+  if (!length(files)) stop("No files found in: ", dir)
+
+  bind_rows(lapply(files, read_gene_score_file, suffix_regex = suffix_regex)) %>%
+    filter(!is.na(gene_id))
+}
+
+# --- paths ---
+single_ctrl_dir <- "gene_scores_control"
+single_fat_dir  <- "gene_scores_fat"
+paired_dir      <- "gene_scores_divergence"
+
+# --- load ---
+control_gene <- load_gene_dir(
+  single_ctrl_dir,
+  file_pattern = "_single_sample_control_gene_scores_combined\\.tsv$",
+  suffix_regex = "_single_sample_control_gene_scores_combined\\.tsv$"
+)
+
+fat_gene <- load_gene_dir(
+  single_fat_dir,
+  file_pattern = "_single_sample_fat_gene_scores_combined\\.tsv$",
+  suffix_regex = "_single_sample_fat_gene_scores_combined\\.tsv$"
+)
+
+paired_gene <- load_gene_dir(
+  paired_dir,
+  file_pattern = "_two_sample_paired_gene_scores_combined\\.tsv$",
+  suffix_regex = "_two_sample_paired_gene_scores_combined\\.tsv$"
+)
+
+# Filter set of MAGs to analyze -- need to be both a NON fat sweeping taxon and have a div score 
+keep_mag_ids <- sweeps %>%
+  filter(!is.na(user_genome),
+                !is.na(p_value_fat_BH),
+                p_value_fat_BH >= 0.05) %>%
+ pull(user_genome) %>%
+  unique()
+
+keep_mag_ids <- intersect(
+  keep_mag_ids,
+  div_scores %>% filter(!is.na(MAG_ID)) %>% pull(MAG_ID) %>% unique()
+)
+
+
+message("Keeping ", length(keep_mag_ids), " MAGs after sweeps+div filter")
+
+
+
+control_gene <- control_gene %>% filter(MAG_ID %in% keep_mag_ids)
+fat_gene     <- fat_gene     %>% filter(MAG_ID %in% keep_mag_ids)
+paired_gene  <- paired_gene  %>% filter(MAG_ID %in% keep_mag_ids)
+
+
+
+single_scores <- full_join(
+control_gene %>%
+    rename(gene_score_tTest_control = `score_tTest_control (%)`) %>%
+    select(gene_id, MAG_ID, gene_score_tTest_control),
+  fat_gene %>%
+    rename(gene_score_tTest_fat = `score_tTest_fat (%)`) %>%
+    select(gene_id, MAG_ID, gene_score_tTest_fat),
+  by = c("gene_id","MAG_ID")
+)
+
+
+paired_scores <- paired_gene %>%
+  rename(gene_score_paired_tTest = `score_tTest (%)`) %>%
+  select(gene_id, MAG_ID, gene_score_paired_tTest)
+
+genes <- full_join(single_scores, paired_scores, by = c("gene_id","MAG_ID"))
+
+
+
+
+
+#join with annotations
+genes <- genes %>%
+  left_join(
+    annotations %>%
+      select(
+        qseqid,
+        recog_general_functional_category = general_functional_category,
+        recog_functional_category         = functional_category,
+        recog_protein_description         = protein_description,
+        # raw recognizer columns (if needed downstream)
+        db_id, db_description
+      ),
+    by = c("gene_id" = "qseqid")
+  )
+
+
+
+functional_group_cols <- c(
+  "recog_protein_description",
+  "recog_general_functional_category",
+  "recog_functional_category"
+)
+
+
+category_columns <- c(
+  "protein_description",
+  "general_functional_category",
+  "functional_category"
+)
+
+
+# min BH-corrected q value per row 
+
+all_rows_path <- "pre_end_summary_all_rows.tsv"
+
+all_rows <- ead_tsv(all_rows_path, col_types = readr::cols())
+
+df_q <- all_rows %>%
+  filter(test %in% c("paired_tTest", "control_tTest", "fat_tTest")) %>%
+  rename(MAG_ID = basename) %>%
+  filter(MAG_ID %in% keep_mag_ids) %>%  # <-- enforce global MAG filter
+  mutate(
+    q_value = suppressWarnings(as.numeric(q_value)),
+    gene_id = na_if(gene_id, "nan")
+  ) %>%
+  filter(!is.na(q_value), !is.na(gene_id))
+
+
+per_gene_q <- df_q %>%
+  group_by(MAG_ID, gene_id, test) %>%
+  summarise(q_gene = min(q_value, na.rm = TRUE), .groups = "drop")
+
+#
+per_gene_q_wide <- per_gene_q %>%
+  tidyr::pivot_wider(
+    id_cols     = c(MAG_ID, gene_id),
+    names_from  = test,
+    values_from = q_gene,
+    names_glue  = "q_{test}"
+  ) %>%
+  mutate(
+    both_sig = (q_paired_tTest < 0.05) & (q_fat_tTest < 0.05)
+  )
+
+per_gene_q_long <- per_gene_q_wide %>%
+  tidyr::pivot_longer(
+    cols = c(q_paired_tTest, q_control_tTest, q_fat_tTest),
+    names_to  = "test",
+    values_to = "q_gene"
+  ) %>%
+  mutate(
+    test = case_when(
+      test == "q_paired_tTest"  ~ "paired_tTest",
+      test == "q_control_tTest" ~ "control_tTest",
+      test == "q_fat_tTest"     ~ "fat_tTest",
+      TRUE ~ test
+    )
+  )
+
+#prep for plotting
+plot_df_gene_minq <- per_gene_q_long %>%
+  mutate(
+    scaffold    = stringr::str_replace(gene_id, "_[^_]+$", ""),
+    gene_number = suppressWarnings(as.numeric(str_extract(gene_id, "[^_]+$")))
+  ) %>%
+  group_by(MAG_ID, scaffold) %>%
+  arrange(gene_number, .by_group = TRUE) %>%
+  mutate(gene_within_scaffold = row_number()) %>%
+  ungroup()
+
+cumulative_positions_gene_minq <- plot_df_gene_minq %>%
+  group_by(MAG_ID, scaffold) %>%
+  summarise(scaffold_length = max(gene_within_scaffold), .groups = "drop") %>%
+  group_by(MAG_ID) %>%
+  arrange(scaffold, .by_group = TRUE) %>%
+  mutate(offset = lag(cumsum(scaffold_length), default = 0)) %>%
+  ungroup()
+
+plot_df_gene_minq <- plot_df_gene_minq %>%
+  left_join(
+    cumulative_positions_gene_minq %>% select(MAG_ID, scaffold, offset),
+    by = c("MAG_ID", "scaffold")
+  ) %>%
+  mutate(
+    cumulative_x = offset + gene_within_scaffold,
+    q_safe       = pmax(q_gene, .Machine$double.xmin),
+    neglog10_q   = -log10(q_safe),
+    highlight    = case_when(
+      both_sig      ~ "Both paired & fat sig",
+      q_gene < 0.05 ~ "Significant (q < 0.05)",
+      TRUE          ~ "Not significant"
+    )
+  )
+
+boundaries_gene_minq <- plot_df_gene_minq %>%
+  group_by(MAG_ID, scaffold) %>%
+  summarise(xend = max(cumulative_x), .groups = "drop")
+
+# plotting the min BH corrected q values
+
+
+sig_rows_path <- "minBH/pre_end_summary_significant_rows.tsv"
+
+min_bh_sig <- readr::read_tsv(sig_rows_path, col_types = readr::cols()) %>%
+  rename(MAG_ID = basename) %>%
+  filter(MAG_ID %in% keep_mag_ids) %>%  # <-- enforce global MAG filter
+  mutate(gene_id = na_if(gene_id, "nan")) %>%
+  filter(!is.na(gene_id), test %in% c("paired_tTest", "fat_tTest", "control_tTest"))
+
+
+annotations_universe <- genes %>%
+  filter(MAG_ID %in% keep_mag_ids) %>%
+  transmute(
+    qseqid = gene_id,
+    protein_description         = recog_protein_description,
+    general_functional_category = recog_general_functional_category,
+    functional_category         = recog_functional_category,
+    
+  ) %>%
+  filter(!is.na(qseqid)) %>%
+  distinct()
+
+# per-test gene flags (has >=1 BH-sig site) over the universe
+make_gene_flags <- function(sig_tbl, which_test, universe_tbl) {
+  sig_ids <- sig_tbl %>%
+    filter(test == which_test) %>%
+    distinct(gene_id) %>%
+    rename(qseqid = gene_id)
+
+  universe_tbl %>%
+    distinct(qseqid) %>%
+    left_join(mutate(sig_ids, has_sig_site = TRUE), by = "qseqid") %>%
+    mutate(has_sig_site = !is.na(has_sig_site)) %>%
+    select(qseqid, has_sig_site)
+}
+
+gene_flags_paired  <- make_gene_flags(min_bh_sig, "paired_tTest",  annotations_universe)
+gene_flags_fat     <- make_gene_flags(min_bh_sig, "fat_tTest",     annotations_universe)
+gene_flags_control <- make_gene_flags(min_bh_sig, "control_tTest", annotations_universe)
+
+#hypergeometric test-- Binary: does the gene have a BH corrected site that is still significant? 
+# Mobilome exclusion: ONLY rows where recognizer functional_category == "Mobilome"
+perform_hypergeo_binary <- function(
+  annot_tbl,
+  gene_flags_tbl,
+  category_col,
+  exclude_mobilome = FALSE
+) {
+  stopifnot(is.character(category_col), length(category_col) == 1)
+  if (!("qseqid" %in% names(annot_tbl)))
+    stop("annot_tbl must contain column 'qseqid'")
+  if (!(category_col %in% names(annot_tbl)))
+    stop(sprintf("annot_tbl must contain column '%s'", category_col))
+  if (!all(c("qseqid", "has_sig_site") %in% names(gene_flags_tbl)))
+    stop("gene_flags_tbl must contain columns 'qseqid' and 'has_sig_site'")
+
+  annot_use <- annot_tbl
+
+  if (exclude_mobilome) {
+    
+    if ("functional_category" %in% names(annot_use)) {
+      annot_use <- annot_use %>%
+        filter(is.na(functional_category) | functional_category != "Mobilome: prophages, transposons")
+    }
+  }
+
+  pairs <- annot_use[, c("qseqid", category_col)]
+  names(pairs) <- c("qseqid", "cat")
+  pairs <- pairs[!is.na(pairs$cat), , drop = FALSE]
+  pairs <- unique(pairs)
+
+  pairs_flag <- left_join(
+    tibble::as_tibble(pairs),
+    tibble::as_tibble(gene_flags_tbl),
+    by = "qseqid"
+  )
+
+  # Universe size = distinct genes that have a category assignment for this field
+  N <- n_distinct(pairs_flag$qseqid)
+  # Significant genes within that universe
+  M <- n_distinct(pairs_flag$qseqid[pairs_flag$has_sig_site])
+
+  if (N == 0L) {
+    return(tibble::tibble(
+      category_col      = character(),
+      category          = character(),
+      total_count       = integer(),
+      significant_count = integer(),
+      N                 = integer(),
+      M                 = integer(),
+      hypergeo_p        = double(),
+      hypergeo_p_adj    = double()
+    ))
+  }
+
+  pairs_flag %>%
+    group_by(cat) %>%
+    summarise(
+      total_count       = n_distinct(qseqid),
+      significant_count = n_distinct(qseqid[has_sig_site]),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      N = N, M = M,
+      hypergeo_p = stats::phyper(
+        q = significant_count - 1,
+        m = M,
+        n = N - M,
+        k = total_count,
+        lower.tail = FALSE
+      ),
+      hypergeo_p_adj = stats::p.adjust(hypergeo_p, method = "BH")
+    ) %>%
+    arrange(hypergeo_p_adj) %>%
+    rename(category = cat) %>%
+    mutate(category_col = category_col, .before = 1)
+}
+
+# Category fields for BH-binary (recognizer + DRAM)
+bh_category_fields <- c(
+  "functional_category",
+  "general_functional_category",
+  "protein_description"
+)
+
+run_bh_binary <- function(gene_flags_tbl, exclude_mobilome) {
+  bind_rows(lapply(bh_category_fields, function(cat_col) {
+    perform_hypergeo_binary(
+      annot_tbl        = annotations_universe,
+      gene_flags_tbl   = gene_flags_tbl,
+      category_col     = cat_col,
+      exclude_mobilome = exclude_mobilome
+    )
+  }))
+}
+
+# Run enrichment: with Mobilome included vs excluded
+hg_bh_paired      <- run_bh_binary(gene_flags_paired,  exclude_mobilome = FALSE)
+hg_bh_paired_nom  <- run_bh_binary(gene_flags_paired,  exclude_mobilome = TRUE)
+
+hg_bh_fat         <- run_bh_binary(gene_flags_fat,     exclude_mobilome = FALSE)
+hg_bh_fat_nom     <- run_bh_binary(gene_flags_fat,     exclude_mobilome = TRUE)
+
+hg_bh_control     <- run_bh_binary(gene_flags_control, exclude_mobilome = FALSE)
+hg_bh_control_nom <- run_bh_binary(gene_flags_control, exclude_mobilome = TRUE)
+
+
+
+###dot plots
+
+TOP_N     <- 30
+CAP_LOG10 <- 50
+
+prep_dot_data <- function(hg_fat, hg_control, hg_paired, field,
+                          top_n = TOP_N, cap_log10 = CAP_LOG10) {
+  df_all <- bind_rows(
+    hg_fat     %>% mutate(test = "fat"),
+    hg_control %>% mutate(test = "control"),
+    hg_paired  %>% mutate(test = "paired")
+  ) %>%
+    filter(category_col == field) %>%
+    mutate(
+      effect     = significant_count / pmax(total_count, 1L),
+      nlog10_fdr = pmin(-log10(pmax(hypergeo_p_adj, .Machine$double.xmin)), cap_log10)
+    )
+
+  keep_cats <- df_all %>%
+    group_by(test) %>%
+    arrange(hypergeo_p_adj, .by_group = TRUE) %>%
+    slice_head(n = top_n) %>%
+    ungroup() %>%
+    distinct(category) %>%
+    pull(category)
+
+  df_all %>%
+    filter(category %in% keep_cats) %>%
+    group_by(category) %>%
+    mutate(effect_max = max(effect, na.rm = TRUE)) %>%
+    ungroup() %>%
+    mutate(category = forcats::fct_reorder(category, effect_max)) %>%
+    select(-effect_max)
+}
+
+make_dot_plot <- function(df_plot, field_label, title_suffix = "") {
+  bg_df <- df_plot %>% mutate(bg_rate = M / N) %>% distinct(test, bg_rate)
+
+  ggplot(df_plot, aes(x = effect, y = category)) +
+    geom_vline(
+      data = bg_df,
+      aes(xintercept = bg_rate, color = test),
+      linetype = 2, show.legend = FALSE
+    ) +
+    geom_point(aes(color = test, size = nlog10_fdr), alpha = 0.9) +
+    geom_point(
+      data = filter(df_plot, hypergeo_p_adj < 0.05),
+      shape = 21, fill = NA, color = "black", stroke = 0.7,
+      aes(size = nlog10_fdr)
+    ) +
+    scale_size_continuous(name = expression(-log[10]~FDR)) +
+    scale_color_manual(
+      values = c(fat = "#FF69B4", control = "#1F77B4", paired = "#2CA02C"),
+      name = "Test"
+    ) +
+    labs(
+      title    = paste0(field_label, " enrichment across tests", title_suffix),
+      subtitle = "Effect size = significant_count / total_count; size = -log10(FDR); dashed = background M/N",
+      x        = "Effect size (proportion with ≥1 BH-sig gene)",
+      y        = NULL
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "right",
+                   panel.grid.minor = element_blank())
+}
+
+category_fields <- bh_category_fields
+
+plots <- list(with_mobilome = list(), no_mobilome = list())
+
+for (fld in category_fields) {
+  df_w  <- prep_dot_data(hg_bh_fat,     hg_bh_control,     hg_bh_paired,     fld)
+  df_wo <- prep_dot_data(hg_bh_fat_nom, hg_bh_control_nom, hg_bh_paired_nom, fld)
+
+  plots$with_mobilome[[fld]] <- make_dot_plot(df_w,  fld, " (Mobilome included)")
+  plots$no_mobilome[[fld]]   <- make_dot_plot(df_wo, fld, " (Mobilome excluded)")
+}
+
+
+```
+
+```{r sig = fat and paired}
+# ------------------------------------------------------------------------------
+# 2) BH-binary hypergeometric enrichment
+#    CHANGE: define "significant genes" as FAT & PAIRED but NOT CONTROL
+
+# ------------------------------------------------------------------------------
+
+make_gene_flags <- function(sig_tbl, which_test, universe_tbl) {
+  sig_ids <- sig_tbl %>%
+    filter(test == which_test) %>%
+    distinct(gene_id) %>%
+    rename(qseqid = gene_id)
+
+  universe_tbl %>%
+    distinct(qseqid) %>%
+    left_join(mutate(sig_ids, has_sig_site = TRUE), by = "qseqid") %>%
+    mutate(has_sig_site = !is.na(has_sig_site)) %>%
+    select(qseqid, has_sig_site)
+}
+
+
+gene_flags_paired  <- make_gene_flags(min_bh_sig, "paired_tTest",  annotations_universe) %>%
+  rename(sig_paired = has_sig_site)
+
+gene_flags_fat     <- make_gene_flags(min_bh_sig, "fat_tTest",     annotations_universe) %>%
+  rename(sig_fat = has_sig_site)
+
+gene_flags_control <- make_gene_flags(min_bh_sig, "control_tTest", annotations_universe) %>%
+  rename(sig_control = has_sig_site)
+
+# --- NEW: combo definition (fat & paired & !control) ---
+gene_flags_combo <- gene_flags_fat %>%
+  left_join(gene_flags_paired,  by = "qseqid") %>%
+  left_join(gene_flags_control, by = "qseqid") %>%
+  mutate(
+    sig_fat     = coalesce(sig_fat,     FALSE),
+    sig_paired  = coalesce(sig_paired,  FALSE),
+    sig_control = coalesce(sig_control, FALSE),
+    has_sig_site = sig_fat & sig_paired & !sig_control
+  ) %>%
+  select(qseqid, has_sig_site)
+
+message(
+  "Combo sig genes (fat & paired & !control): ",
+  sum(gene_flags_combo$has_sig_site, na.rm = TRUE),
+  " / universe genes: ",
+  nrow(gene_flags_combo)
+)
+
+
+perform_hypergeo_binary <- function(
+  annot_tbl,
+  gene_flags_tbl,
+  category_col,
+  exclude_mobilome = FALSE
+) {
+  stopifnot(is.character(category_col), length(category_col) == 1)
+  if (!("qseqid" %in% names(annot_tbl)))
+    stop("annot_tbl must contain column 'qseqid'")
+  if (!(category_col %in% names(annot_tbl)))
+    stop(sprintf("annot_tbl must contain column '%s'", category_col))
+  if (!all(c("qseqid", "has_sig_site") %in% names(gene_flags_tbl)))
+    stop("gene_flags_tbl must contain columns 'qseqid' and 'has_sig_site'")
+
+  annot_use <- annot_tbl
+
+  if (exclude_mobilome) {
+    # EXACTLY as in your working script (not "Mobilome" only)
+    if ("functional_category" %in% names(annot_use)) {
+      annot_use <- annot_use %>%
+        filter(is.na(functional_category) |
+                        functional_category != "Mobilome: prophages, transposons")
+    }
+  }
+
+  pairs <- annot_use[, c("qseqid", category_col)]
+  names(pairs) <- c("qseqid", "cat")
+  pairs <- pairs[!is.na(pairs$cat), , drop = FALSE]
+  pairs <- unique(pairs)
+
+  pairs_flag <- left_join(
+    tibble::as_tibble(pairs),
+    tibble::as_tibble(gene_flags_tbl),
+    by = "qseqid"
+  )
+
+  # Universe size = distinct genes that have a category assignment for this field
+  N <- n_distinct(pairs_flag$qseqid)
+  # Significant genes within that universe
+  M <- n_distinct(pairs_flag$qseqid[pairs_flag$has_sig_site])
+
+  if (N == 0L) {
+    return(tibble::tibble(
+      category_col      = character(),
+      category          = character(),
+      total_count       = integer(),
+      significant_count = integer(),
+      N                 = integer(),
+      M                 = integer(),
+      hypergeo_p        = double(),
+      hypergeo_p_adj    = double()
+    ))
+  }
+
+  pairs_flag %>%
+    group_by(cat) %>%
+    summarise(
+      total_count       = n_distinct(qseqid),
+      significant_count = n_distinct(qseqid[has_sig_site]),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      N = N, M = M,
+      hypergeo_p = stats::phyper(
+        q = significant_count - 1,
+        m = M,
+        n = N - M,
+        k = total_count,
+        lower.tail = FALSE
+      ),
+      hypergeo_p_adj = stats::p.adjust(hypergeo_p, method = "BH")
+    ) %>%
+    arrange(hypergeo_p_adj) %>%
+    rename(category = cat) %>%
+    mutate(category_col = category_col, .before = 1)
+}
+
+# Category fields for BH-binary (recognizer + DRAM)
+bh_category_fields <- c(
+  "functional_category",
+  "general_functional_category",
+  "protein_description"
+)
+
+run_bh_binary <- function(gene_flags_tbl, exclude_mobilome) {
+  bind_rows(lapply(bh_category_fields, function(cat_col) {
+    perform_hypergeo_binary(
+      annot_tbl        = annotations_universe,
+      gene_flags_tbl   = gene_flags_tbl,
+      category_col     = cat_col,
+      exclude_mobilome = exclude_mobilome
+    )
+  }))
+}
+
+
+hg_bh_combo      <- run_bh_binary(gene_flags_combo, exclude_mobilome = FALSE)
+hg_bh_combo_nom  <- run_bh_binary(gene_flags_combo, exclude_mobilome = TRUE)
+
+```
