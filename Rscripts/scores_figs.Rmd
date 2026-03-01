@@ -1,1 +1,826 @@
+```{r phylogeny fig mapq20}
+#scores
+control_mapq20 <- read_tsv("scores_single_sample-pre_end-fat_control_control-MAGs.tsv")
+fat_mapq20 <-  read_tsv("scores_single_sample-pre_end-fat_control_fat-MAGs.tsv")
+div_mapq20 <-  read_tsv("scores_two_sample_paired-pre_end-fat_control-MAGs.tsv")
+
+
+# prep minBH
+
+min_BH <- read_tsv("minBH_summary_real.tsv")
+
+div_minBH <- min_BH %>%
+  filter(period == "pre_end",
+         test_type == "two_sample_paired_tTest")
+
+control_minBH <- min_BH %>%
+  filter(period == "pre_end",
+         group_analyzed == "control",
+         test_type == "single_sample_tTest")
+
+
+fat_minBH <- min_BH %>%
+  filter(period == "pre_end",
+         group_analyzed == "fat",
+         test_type == "single_sample_tTest")
+# Use the new min-BH subsets to feed the panels
+mapq20_par_control_min <- control_minBH %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+mapq20_par_fat_min <- fat_minBH %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+mapq20_div_min_by_mag <- div_minBH %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+full_tree <- read.tree("mouse_MAGs.contree")
+
+# Keep only tips from SGBs that have a paired ttest score
+sgb_tree <- keep.tip(full_tree, two_samp_pre_end$MAG_ID)
+
+
+base_tax <- two_samp_pre_end %>%
+  select(MAG_ID, domain:species)
+
+# Divergence 
+div_scores <- two_samp_pre_end %>%
+  select(MAG_ID, `score_tTest (%)`) %>%
+  rename(div_mapq20 = `score_tTest (%)`)
+
+# Control parallelism
+control_scores <- control_mapq20 %>%
+  filter(MAG_ID %in% two_samp_pre_end$MAG_ID) %>%
+  select(MAG_ID, `score_tTest_control (%)`) %>%
+  rename(control_mapq20 = `score_tTest_control (%)`)
+
+# Fat parallelism 
+fat_scores <- fat_mapq20 %>%
+  filter(MAG_ID %in% two_samp_pre_end$MAG_ID) %>%
+  select(MAG_ID, `score_tTest_fat (%)`) %>%
+  rename(fat_mapq20 = `score_tTest_fat (%)`)
+
+# Join everything
+mapq20_joined <- base_tax %>%
+  left_join(div_scores,     by = "MAG_ID") %>%
+  left_join(control_scores, by = "MAG_ID") %>%
+  left_join(fat_scores,     by = "MAG_ID")
+
+
+
+#link to phylum
+tip_metadata_tbl <- data.frame(label = sgb_tree$tip.label) %>%
+  left_join(mapq20_joined %>% select(MAG_ID, phylum),
+            by = c("label" = "MAG_ID")) %>%
+  select(label, phylum) %>%
+  as_tibble()
+
+
+#Plot the Tree with Tip Dots Colored by Phylum
+
+sgb_tree_ultrametric <- chronos(sgb_tree)
+
+phylum_colors <- setNames(rainbow(length(unique(tip_metadata_tbl$phylum))),
+                          unique(tip_metadata_tbl$phylum))
+
+# base tree
+p <- ggtree(sgb_tree_ultrametric, layout = "rectangular") %<+% tip_metadata_tbl +
+  geom_tree(aes(color = phylum), linewidth = 0.6) +   # <- branch color
+  scale_color_manual(values = phylum_colors, name = "phylum") +
+  theme_tree2() +
+  ggtitle("Fig 1 phylogeny, MAPQ 20")
+p
+ 
+testscore_long <- mapq20_joined %>%
+    select(MAG_ID, control_mapq20, fat_mapq20, div_mapq20) %>%
+    pivot_longer(-MAG_ID, names_to = "TestScore", values_to = "Score") %>%
+    replace_na(list(Score = 0)) %>%
+    rename(label = MAG_ID) %>%
+    mutate(xpos = case_when(
+        TestScore == "control_mapq20" ~ 1,
+        TestScore == "fat_mapq20" ~ 2,
+        TestScore == "div_mapq20" ~ 3,
+        TRUE ~ NA_real_
+    ))
+
+testscore_long$TestScore <- factor(testscore_long$TestScore,
+                                   levels = c("control_mapq20", 
+                                              "fat_mapq20", 
+                                              "div_mapq20"))
+
+
+
+
+heatmap_data_control <- mapq20_par_control_min %>% rename(label = mag_id) %>% mutate(xpos = 1)
+heatmap_data_fat     <- mapq20_par_fat_min %>% rename(label = mag_id) %>% mutate(xpos = 2)
+heatmap_data_paired  <- mapq20_div_min_by_mag %>% rename(label = mag_id) %>% mutate(xpos = 3)
+
+sig_control <- mapq20_par_control_min %>% 
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20 < 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 1)
+
+sig_fat <- mapq20_par_fat_min %>%
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20< 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 2)
+
+sig_paired <- mapq20_div_min_by_mag %>%
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20 < 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 3)
+
+# tree and heatmap panels
+
+p2 <- facet_plot(p, panel = "Test Scores", data = testscore_long, geom = geom_tile,
+                 mapping = aes(x = xpos, fill = Score), width = 0.5) +
+  scale_x_continuous(breaks = 1:3, labels = c("Control", "Fat", "Paired")) +
+  scale_fill_viridis_c(name = "Score", option = "C", na.value = "gray")
+
+p2
+#Control Heatmap
+p2 <- p2 + new_scale_fill()
+p3 <- facet_plot(p2, panel = "control min q", data = heatmap_data_control,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "control min q", data = sig_control,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "control min q", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) 
+    
+p3
+#Fat Heatmap
+p3 <- p3 + new_scale_fill()
+p4 <- facet_plot(p3, panel = "fat min q", data = heatmap_data_fat,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "fat min q", data = sig_fat,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "fat min q", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) +
+    theme_minimal()
+p4
+# Divergence Heatmap 
+p4 <- p4 + new_scale_fill()
+p5 <- facet_plot(p4, panel = "div min q", data = heatmap_data_paired,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "div min q", data = sig_paired,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "div min q", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) +
+    theme_classic()
+
+
+#final plot
+print(p5)
+
+
+```
+
+```{r phylogeny fig mapq20 wilcoxon}
+#scores
+control_mapq20 <- read_tsv("scores_single_sample-pre_end-fat_control_control-MAGs.tsv")
+fat_mapq20 <-  read_tsv("scores_single_sample-pre_end-fat_control_fat-MAGs.tsv")
+div_mapq20 <-  read_tsv("scores_two_sample_paired-pre_end-fat_control-MAGs.tsv")
+
+
+
+
+min_BH <- read_tsv("minBH_summary_real.tsv")
+
+div_minBH <- min_BH %>%
+  filter(period == "pre_end",
+         test_type == "two_sample_paired_Wilxocon")
+
+control_minBH <- min_BH %>%
+  filter(period == "pre_end",
+         group_analyzed == "control",
+         test_type == "single_sample_Wilxocon")
+
+
+fat_minBH <- min_BH %>%
+  filter(period == "pre_end",
+         group_analyzed == "fat",
+         test_type == "single_sample_Wilxocon")
+# Use the new min-BH subsets to feed the panels
+mapq20_par_control_min <- control_minBH %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+mapq20_par_fat_min <- fat_minBH %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+mapq20_div_min_by_mag <- div_minBH %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+
+full_tree <- read.tree("mouse_MAGs.contree")
+
+sgb_tree <- keep.tip(full_tree, two_samp_pre_end$MAG_ID)
+
+base_tax <- two_samp_pre_end %>%
+  select(MAG_ID, domain:species)
+
+
+div_scores <- two_samp_pre_end %>%
+  select(MAG_ID, `score_Wilcoxon (%)`) %>%
+  rename(div_mapq20 = `score_Wilcoxon (%)`)
+
+
+control_scores <- control_mapq20 %>%
+  filter(MAG_ID %in% two_samp_pre_end$MAG_ID) %>%
+  select(MAG_ID, `score_Wilcoxon_control (%)`) %>%
+  rename(control_mapq20 = `score_Wilcoxon_control (%)`)
+
+# Fat parallelism -> fat_mapq20
+fat_scores <- fat_mapq20 %>%
+  filter(MAG_ID %in% two_samp_pre_end$MAG_ID) %>%
+  select(MAG_ID, `score_Wilcoxon_fat (%)`) %>%
+  rename(fat_mapq20 = `score_Wilcoxon_fat (%)`)
+
+mapq20_joined <- base_tax %>%
+  left_join(div_scores,     by = "MAG_ID") %>%
+  left_join(control_scores, by = "MAG_ID") %>%
+  left_join(fat_scores,     by = "MAG_ID")
+tip_metadata_tbl <- data.frame(label = sgb_tree$tip.label) %>%
+  left_join(mapq20_joined %>% select(MAG_ID, phylum),
+            by = c("label" = "MAG_ID")) %>%
+  select(label, phylum) %>%
+  as_tibble()
+
+
+
+sgb_tree_ultrametric <- chronos(sgb_tree)
+
+phylum_colors <- setNames(rainbow(length(unique(tip_metadata_tbl$phylum))),
+                          unique(tip_metadata_tbl$phylum))
+
+p <- ggtree(sgb_tree_ultrametric, layout = "rectangular") %<+% tip_metadata_tbl +
+  geom_tree(aes(color = phylum), linewidth = 0.6) +   # <- branch color
+  scale_color_manual(values = phylum_colors, name = "phylum") +
+  theme_tree2() +
+  ggtitle("Fig 1 phylogeny wilcoxon, MAPQ 20")
+p
+
+testscore_long <- mapq20_joined %>%
+    select(MAG_ID, control_mapq20, fat_mapq20, div_mapq20) %>%
+    pivot_longer(-MAG_ID, names_to = "TestScore", values_to = "Score") %>%
+    replace_na(list(Score = 0)) %>%
+    rename(label = MAG_ID) %>%
+    mutate(xpos = case_when(
+        TestScore == "control_mapq20" ~ 1,
+        TestScore == "fat_mapq20" ~ 2,
+        TestScore == "div_mapq20" ~ 3,
+        TRUE ~ NA_real_
+    ))
+
+testscore_long$TestScore <- factor(testscore_long$TestScore,
+                                   levels = c("control_mapq20", 
+                                              "fat_mapq20", 
+                                              "div_mapq20"))
+
+heatmap_data_control <- mapq20_par_control_min %>% rename(label = mag_id) %>% mutate(xpos = 1)
+heatmap_data_fat     <- mapq20_par_fat_min %>% rename(label = mag_id) %>% mutate(xpos = 2)
+heatmap_data_paired  <- mapq20_div_min_by_mag %>% rename(label = mag_id) %>% mutate(xpos = 3)
+
+sig_control <- mapq20_par_control_min %>% 
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20 < 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 1)
+
+sig_fat <- mapq20_par_fat_min %>%
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20< 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 2)
+
+sig_paired <- mapq20_div_min_by_mag %>%
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20 < 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 3)
+
+
+p2 <- facet_plot(p, panel = "Test Scores", data = testscore_long, geom = geom_tile,
+                 mapping = aes(x = xpos, fill = Score), width = 0.5) +
+  scale_x_continuous(breaks = 1:3, labels = c("Control", "Fat", "Paired")) +
+  scale_fill_viridis_c(name = "Score", option = "C", na.value = "gray")
+
+p2
+
+p2 <- p2 + new_scale_fill()
+p3 <- facet_plot(p2, panel = "control min q", data = heatmap_data_control,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "control min q", data = sig_control,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "control min q", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) 
+    
+p3
+
+p3 <- p3 + new_scale_fill()
+p4 <- facet_plot(p3, panel = "fat min q", data = heatmap_data_fat,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "fat min q", data = sig_fat,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "fat min q", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) +
+    theme_minimal()
+p4
+
+p4 <- p4 + new_scale_fill()
+p5 <- facet_plot(p4, panel = "div min q", data = heatmap_data_paired,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "div min q", data = sig_paired,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "div min q", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) +
+    theme_classic()
+
+
+
+print(p5)
+
+
+
+```
+
+```{r phylogeny fig mapq20 lmm}
+
+control_mapq20 <- read_tsv("scores_lmm_across_time-pre_end-fat_control_control-MAGs.tsv")
+fat_mapq20 <-  read_tsv("scores_lmm_across_time-pre_end-fat_control_fat-MAGs.tsv")
+div_mapq20 <-  read_tsv("scores_lmm-pre_end-fat_control-MAGs.tsv")
+
+
+min_BH <- read_tsv("minBH_summary_real.tsv")
+
+div_minBH <- min_BH %>%
+  filter(period == "pre_end",
+         test_type == "LMM",
+         is.na(group_analyzed))
+
+
+control_minBH <- min_BH %>%
+  filter(period == "pre_end",
+         group_analyzed == "control",
+         test_type == "LMM")
+
+
+fat_minBH <- min_BH %>%
+  filter(period == "pre_end",
+         group_analyzed == "fat",
+         test_type == "LMM")
+
+# Use the new min-BH subsets to feed the panels
+mapq20_par_control_min <- control_minBH %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+mapq20_par_fat_min <- fat_minBH %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+mapq20_div_min_by_mag <- div_minBH %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+
+
+full_tree <- read.tree("mouse_MAGs.contree")
+
+
+sgb_tree <- keep.tip(full_tree, two_samp_pre_end$MAG_ID)
+
+
+base_tax <- two_samp_pre_end %>%
+  select(MAG_ID, domain:species)
+
+
+div_scores <- div_mapq20 %>%
+  select(MAG_ID, `score_LMM (%)`) %>%
+  rename(div_mapq20 = `score_LMM (%)`)
+
+
+control_scores <- control_mapq20 %>%
+  filter(MAG_ID %in% control_mapq20$MAG_ID) %>%
+  select(MAG_ID, `score_LMM (%)`) %>%
+  rename(control_mapq20 = `score_LMM (%)`)
+
+# Fat parallelism -> fat_mapq20
+fat_scores <- fat_mapq20 %>%
+  filter(MAG_ID %in% fat_mapq20$MAG_ID) %>%
+  select(MAG_ID, `score_LMM (%)`) %>%
+  rename(fat_mapq20 = `score_LMM (%)`)
+
+
+mapq20_joined <- base_tax %>%
+  left_join(div_scores,     by = "MAG_ID") %>%
+  left_join(control_scores, by = "MAG_ID") %>%
+  left_join(fat_scores,     by = "MAG_ID")
+
+
+
+
+tip_metadata_tbl <- data.frame(label = sgb_tree$tip.label) %>%
+  left_join(mapq20_joined %>% select(MAG_ID, phylum),
+            by = c("label" = "MAG_ID")) %>%
+  select(label, phylum) %>%
+  as_tibble()
+
+
+
+sgb_tree_ultrametric <- chronos(sgb_tree)
+
+
+phylum_colors <- setNames(rainbow(length(unique(tip_metadata_tbl$phylum))),
+                          unique(tip_metadata_tbl$phylum))
+
+
+p <- ggtree(sgb_tree_ultrametric, layout = "rectangular") %<+% tip_metadata_tbl +
+  geom_tree(aes(color = phylum), linewidth = 0.6) +   # <- branch color
+  scale_color_manual(values = phylum_colors, name = "phylum") +
+  theme_tree2() +
+  ggtitle("Fig 1 phylogeny LMM, MAPQ 20")
+p
+
+testscore_long <- mapq20_joined %>%
+    select(MAG_ID, control_mapq20, fat_mapq20, div_mapq20) %>%
+    pivot_longer(-MAG_ID, names_to = "TestScore", values_to = "Score") %>%
+    replace_na(list(Score = 0)) %>%
+    rename(label = MAG_ID) %>%
+    mutate(xpos = case_when(
+        TestScore == "control_mapq20" ~ 1,
+        TestScore == "fat_mapq20" ~ 2,
+        TestScore == "div_mapq20" ~ 3,
+        TRUE ~ NA_real_
+    ))
+
+testscore_long$TestScore <- factor(testscore_long$TestScore,
+                                   levels = c("control_mapq20", 
+                                              "fat_mapq20", 
+                                              "div_mapq20"))
+
+
+heatmap_data_control <- mapq20_par_control_min %>% rename(label = mag_id) %>% mutate(xpos = 1)
+heatmap_data_fat     <- mapq20_par_fat_min %>% rename(label = mag_id) %>% mutate(xpos = 2)
+heatmap_data_paired  <- mapq20_div_min_by_mag %>% rename(label = mag_id) %>% mutate(xpos = 3)
+
+sig_control <- mapq20_par_control_min %>% 
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20 < 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 1)
+
+sig_fat <- mapq20_par_fat_min %>%
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20< 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 2)
+
+sig_paired <- mapq20_div_min_by_mag %>%
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20 < 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 3)
+
+
+
+p2 <- facet_plot(p, panel = "Test Scores", data = testscore_long, geom = geom_tile,
+                 mapping = aes(x = xpos, fill = Score), width = 0.5) +
+  scale_x_continuous(breaks = 1:3, labels = c("Control", "Fat", "Paired")) +
+  scale_fill_viridis_c(name = "Score", option = "C", na.value = "gray")
+
+p2
+p2 <- p2 + new_scale_fill()
+p3 <- facet_plot(p2, panel = "control min q", data = heatmap_data_control,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "control min q", data = sig_control,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "control min q", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) 
+    
+p3
+
+p3 <- p3 + new_scale_fill()
+p4 <- facet_plot(p3, panel = "fat min q", data = heatmap_data_fat,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "fat min q", data = sig_fat,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "fat min q", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) +
+    theme_minimal()
+p4
+
+p4 <- p4 + new_scale_fill()
+p5 <- facet_plot(p4, panel = "div min q", data = heatmap_data_paired,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "div min q", data = sig_paired,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "div min q", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) +
+    theme_classic()
+
+
+
+```
+
+
+```{r phylogeny fig mapq20 cmh}
+
+control_mapq20 <- read_tsv("scores_cmh_across_time-pre_end-fat_control_control-MAGs.tsv")
+fat_mapq20 <-  read_tsv("scores_cmh_across_time-pre_end-fat_control_fat-MAGs.tsv")
+div_mapq20_pre <-  read_tsv("scores_cmh-pre_end-fat_control-MAGs-pre.tsv")
+div_mapq20_end <-  read_tsv("scores_cmh-pre_end-fat_control-MAGs-end.tsv")
+
+
+
+
+min_BH <- read_tsv("minBH_summary_real.tsv")
+
+div_minBH_pre <- min_BH %>%
+  filter(period == "pre_end",
+         test_type == "CMH", 
+         group_analyzed == "pre")
+
+div_minBH_end <- min_BH %>%
+  filter(period == "pre_end",
+         test_type == "CMH", 
+         group_analyzed == "end")
+
+control_minBH <- min_BH %>%
+  filter(period == "pre_end",
+         group_analyzed == "control",
+         test_type == "CMH")
+
+
+fat_minBH <- min_BH %>%
+  filter(period == "pre_end",
+         group_analyzed == "fat",
+         test_type == "CMH")
+
+
+mapq20_par_control_min <- control_minBH %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+mapq20_par_fat_min <- fat_minBH %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+mapq20_div_min_by_mag_pre <- div_minBH_pre %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+mapq20_div_min_by_mag_end <- div_minBH_end %>%
+  dplyr::select(mag_id, q_mapq20 = q_value)
+
+
+full_tree <- read.tree("mouse_MAGs.contree")
+
+
+sgb_tree <- keep.tip(full_tree, two_samp_pre_end$MAG_ID)
+
+
+base_tax <- two_samp_pre_end %>%
+  select(MAG_ID, domain:species)
+
+
+div_scores_pre <- div_mapq20_pre %>%
+  select(MAG_ID, `score_CMH (%)`) %>%
+  rename(div_mapq20_pre = `score_CMH (%)`)
+
+div_scores_end <- div_mapq20_end %>%
+  select(MAG_ID, `score_CMH (%)`) %>%
+  rename(div_mapq20_end = `score_CMH (%)`)
+
+
+control_scores <- control_mapq20 %>%
+  filter(MAG_ID %in% control_mapq20$MAG_ID) %>%
+  select(MAG_ID, `score_CMH (%)`) %>%
+  rename(control_mapq20 = `score_CMH (%)`)
+
+
+fat_scores <- fat_mapq20 %>%
+  filter(MAG_ID %in% fat_mapq20$MAG_ID) %>%
+  select(MAG_ID, `score_CMH (%)`) %>%
+  rename(fat_mapq20 = `score_CMH (%)`)
+
+
+mapq20_joined <- base_tax %>%
+  left_join(div_scores_pre,     by = "MAG_ID") %>%
+  left_join(div_scores_end,     by = "MAG_ID") %>%
+  left_join(control_scores, by = "MAG_ID") %>%
+  left_join(fat_scores,     by = "MAG_ID")
+
+
+
+tip_metadata_tbl <- data.frame(label = sgb_tree$tip.label) %>%
+  left_join(mapq20_joined %>% select(MAG_ID, phylum),
+            by = c("label" = "MAG_ID")) %>%
+  select(label, phylum) %>%
+  as_tibble()
+
+
+
+phylum_colors <- setNames(rainbow(length(unique(tip_metadata_tbl$phylum))),
+                          unique(tip_metadata_tbl$phylum))
+
+
+p <- ggtree(sgb_tree_ultrametric, layout = "rectangular") %<+% tip_metadata_tbl +
+  geom_tree(aes(color = phylum), linewidth = 0.6) +   # <- branch color
+  scale_color_manual(values = phylum_colors, name = "phylum") +
+  theme_tree2() +
+  ggtitle("Fig 1 phylogeny CMH, MAPQ 20")
+p
+
+testscore_long <- mapq20_joined %>%
+    select(MAG_ID, control_mapq20, fat_mapq20, div_mapq20_pre, div_mapq20_end) %>%
+    pivot_longer(-MAG_ID, names_to = "TestScore", values_to = "Score") %>%
+    replace_na(list(Score = 0)) %>%
+    rename(label = MAG_ID) %>%
+    mutate(xpos = case_when(
+        TestScore == "control_mapq20" ~ 1,
+        TestScore == "fat_mapq20" ~ 2,
+        TestScore == "div_mapq20_pre" ~ 3,
+        TestScore == "div_mapq20_end" ~ 4,
+        TRUE ~ NA_real_
+    ))
+
+testscore_long$TestScore <- factor(testscore_long$TestScore,
+                                   levels = c("control_mapq20", 
+                                              "fat_mapq20", 
+                                              "div_mapq20_pre", 
+                                              "div_mapq20_end"))
+
+
+heatmap_data_control <- mapq20_par_control_min %>% rename(label = mag_id) %>% mutate(xpos = 1)
+heatmap_data_fat     <- mapq20_par_fat_min %>% rename(label = mag_id) %>% mutate(xpos = 2)
+heatmap_data_paired_pre  <- mapq20_div_min_by_mag_pre %>% rename(label = mag_id) %>% mutate(xpos = 3)
+heatmap_data_paired_end  <- mapq20_div_min_by_mag_end %>% rename(label = mag_id) %>% mutate(xpos = 3)
+
+
+sig_control <- mapq20_par_control_min %>% 
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20 < 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 1)
+
+sig_fat <- mapq20_par_fat_min %>%
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20< 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 2)
+
+sig_paired_pre <- mapq20_div_min_by_mag_pre %>%
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20 < 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 3)
+
+sig_paired_end <- mapq20_div_min_by_mag_end %>%
+    rename(label = mag_id) %>%
+    mutate(sig = case_when(
+        q_mapq20 < 0.001 ~ "***",
+        q_mapq20 < 0.01  ~ "**",
+        q_mapq20 < 0.05  ~ "*",
+        TRUE ~ ""
+    ), xpos = 3)
+
+
+p2 <- facet_plot(p, panel = "Test Scores", data = testscore_long, geom = geom_tile,
+                 mapping = aes(x = xpos, fill = Score), width = 0.5) +
+  scale_x_continuous(breaks = 1:4, labels = c("Control", "Fat", "Paired_Pre", "Paired_End")) +
+  scale_fill_viridis_c(name = "Score", option = "C", na.value = "gray")
+
+p2
+
+p2 <- p2 + new_scale_fill()
+p3 <- facet_plot(p2, panel = "control min q", data = heatmap_data_control,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "control min q", data = sig_control,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "control min q", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) 
+    
+p3
+
+p3 <- p3 + new_scale_fill()
+p4 <- facet_plot(p3, panel = "fat min q", data = heatmap_data_fat,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "fat min q", data = sig_fat,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "fat min q", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) +
+    theme_minimal()
+p4
+
+p4 <- p4 + new_scale_fill()
+p5 <- facet_plot(p4, panel = "div min q pre", data = heatmap_data_paired_pre,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "div min q pre", data = sig_paired_pre,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "div min q", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) +
+    theme_classic()
+
+p5
+
+p5 <- p5 + new_scale_fill()
+p5.5 <- facet_plot(p5, panel = "div min q end", data = heatmap_data_paired_end,
+                 geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
+    facet_plot(panel = "div min q end", data = sig_paired_end,
+               geom = geom_text, mapping = aes(x = xpos, label = sig), size = 3) +
+    scale_fill_viridis_c(name = "div min q end", direction = -1,
+                         limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) +
+    theme_classic()
+
+p5.5
+
+
+
+```
+
+
+```r { wilcoxon vs. ttest scores}
+
+
+p <- ggplot(two_samp_pre_end,
+            aes(x = `score_tTest (%)`,
+                y = `score_Wilcoxon (%)`)) +
+  geom_point(size = 2, alpha = 0.7) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dotted") +
+  theme_classic() +
+  labs(
+    x = "t-test score (%)",
+    y = "Wilcoxon score (%)",
+    title = "Comparison of t-test vs Wilcoxon scores"
+  )
+cor_test_spearman <- cor.test(
+  two_samp_pre_end$`score_tTest (%)`,
+  two_samp_pre_end$`score_Wilcoxon (%)`,
+  method = "spearman"
+)
+
+cor_test_spearman
+
+
+r <- cor(
+  two_samp_pre_end$`score_tTest (%)`,
+  two_samp_pre_end$`score_Wilcoxon (%)`,
+  method = "spearman"
+)
+
+p + annotate("text",
+             x = Inf, y = -Inf,
+             hjust = 1.1, vjust = -0.5,
+             label = paste0("r = ", round(r, 3)))
+
+
+
+```
+
+
 
