@@ -1,0 +1,65 @@
+# Snakefile for running PhaseFinder on multiple genomes and paired-end reads
+
+import os
+import glob
+
+# input directories
+GENOME_DIR = "Dietmice_Bacteroides_muris/dereplicated_fa"
+FASTQ_DIR = "Dietmice_Bacteroides_muris/fq"
+DATA_DIR = "data_micediet_Bacteroides_muris"
+
+# functions
+def get_genomes():
+    return [os.path.basename(f) for f in glob.glob(os.path.join(GENOME_DIR, "*.fa"))]
+
+def get_fastq_pairs():
+    #fq files are named *_1.fastq and *_2.fastq
+    r1_files = sorted(glob.glob(os.path.join(FASTQ_DIR, "*_R1.fastq.gz")))
+    r2_files = [f.replace("_R1.fastq.gz","_R2.fastq.gz") for f in r1_files]
+    return list(zip(r1_files, r2_files))
+
+FASTQ_PAIRS = get_fastq_pairs()
+GENOMES = [g.replace(".fa","") for g in get_genomes()]
+SAMPLES = [os.path.basename(r1).replace("_R1.fastq.gz","") for r1,r2 in FASTQ_PAIRS]
+# Rules
+rule all:
+    input:
+        expand("data_micediet_Bacteroides_muris/{genome}.tab", genome=GENOMES),
+        expand("data_micediet_Bacteroides_muris/{genome}.ID.fasta", genome=GENOMES), 
+        expand(os.path.join(DATA_DIR, "out_{sample}.ratio.txt"), sample=SAMPLES)
+# Locate inverted repeats
+rule locate:
+    input:
+        genome = os.path.join(GENOME_DIR, "SLG1207_DASTool_bins_18.fa")
+    output:
+        tab = os.path.join(DATA_DIR, "SLG1207_DASTool_bins_18.tab")
+    threads: 1
+    shell:
+        """
+        python PhaseFinder.py locate -f {input.genome} -t {output.tab} -g 15 85 -p
+        """
+
+ #Mimic inversion
+rule create:
+    input:
+        genome = os.path.join(GENOME_DIR, "SLG1207_DASTool_bins_18.fa"),
+        tab = os.path.join(DATA_DIR, "SLG1207_DASTool_bins_18.tab")
+    output:
+        fasta = os.path.join(DATA_DIR, "SLG1207_DASTool_bins_18.ID.fasta")
+    threads: 1
+    shell:
+        " python PhaseFinder.py create -f {input.genome} -t {input.tab} -s 1000 -i {output.fasta} "
+# Ratio (paired-end reads)
+rule ratio:
+    input:
+        fasta = os.path.join(DATA_DIR, "SLG1207_DASTool_bins_18.ID.fasta"),
+        r1 = lambda wc: os.path.join(FASTQ_DIR, f"{wc.sample}_R1.fastq.gz"),
+        r2 = lambda wc: os.path.join(FASTQ_DIR, f"{wc.sample}_R2.fastq.gz")
+    output:
+        #directory(os.path.join(DATA_DIR, "{genome}_{sample}"))
+        ratio_file = os.path.join(DATA_DIR,"out_{sample}.ratio.txt")
+    threads: 16
+    shell:
+        """
+        python PhaseFinder.py ratio -i {input.fasta} -1 {input.r1} -2 {input.r2} -p {threads} -o {DATA_DIR}/out_{wildcards.sample}
+        """
