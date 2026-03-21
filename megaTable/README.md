@@ -22,7 +22,7 @@ The workflow processes allele frequency data from metagenomic samples, filtering
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         STEP 1: EXTRACT POSITIONS                           │
 │  Rule: extract_mag_positions                                                │
-│  Script: ../scripts/extract_mag_positions.py                                │
+│  Script: extract_mag_positions.py                                           │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Extracts unique (MAG, contig, position) tuples from significance tests     │
 │  → tested_positions/two_sample_paired_mag_positions.tsv.gz                  │

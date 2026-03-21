@@ -1,6 +1,6 @@
 # DietDrivenMicrobiota
 
-Analysis code and workflows for studying diet-driven allele frequency changes in gut microbiota using [AlleleFlux](https://github.com/MoellerLabPU/AlleleFlux).
+Analysis code and workflows for studying diet-driven allele frequency changes in gut microbiota.
 
 This repository contains the computational analysis pipeline for investigating how dietary interventions (high-fat vs. control diet) shape within-species genetic variation in the mouse gut microbiome. Using longitudinal metagenomic data, we track allele frequency shifts in metagenome-assembled genomes (MAGs) across experimental timepoints and perform statistical testing to identify positions under diet-driven selection.
 
@@ -17,10 +17,9 @@ DietDrivenMicrobiota/
 │   ├── FigS2_S3_S4/                       # Fig S2-S4: Community diversity analysis
 │   └── FigS5_S6_S7/                       # Fig S5-S7: Supplementary score comparisons
 │
-├── scripts/                               # Helper Python scripts
+├── miscellaneous scripts/                 # Helper Python scripts
 │   ├── bh_list_sam.py                     # BH-corrected p-value summary across tests
-│   ├── combine_files.py                   # Concatenate per-MAG significance files
-│   └── extract_mag_positions.py           # Extract (MAG, contig, position) tuples
+│   └── combine_files.py                   # Concatenate per-MAG significance files
 │
 ├── notebooks/                             # Jupyter notebooks for analysis
 │   ├── add_protein_description.ipynb      # Merge p-value summaries with protein annotations
@@ -31,6 +30,7 @@ DietDrivenMicrobiota/
 │   ├── README.md                          # Detailed workflow documentation
 │   ├── MEGATABLE_COLUMN_DOCUMENTATION.md  # Column reference for output tables
 │   ├── create_megatable.smk               # Snakemake workflow
+│   ├── extract_mag_positions.py           # Extract (MAG, contig, position) tuples
 │   └── config*.yml                        # Workflow configurations
 │
 ├── isolate_Bacteroides_muris/             # B. muris isolate processing pipeline
@@ -63,13 +63,12 @@ Each figure's code is organized in its own subdirectory under [`figures/`](figur
 
 ## Components
 
-### Helper Scripts (`scripts/`)
+### Miscellaneous Scripts (`miscellaneous scripts/`)
 
 | Script | Description |
 |--------|-------------|
 | `bh_list_sam.py` | Computes BH-corrected p-value summaries across multiple statistical tests for two comparison periods |
 | `combine_files.py` | Concatenates per-MAG AlleleFlux significance test result files into unified tables |
-| `extract_mag_positions.py` | Extracts and combines unique (MAG, contig, position) tuples from per-MAG AlleleFlux result files |
 
 ### MegaTable Workflow (`megaTable/`)
 
