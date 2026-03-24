@@ -1,0 +1,111 @@
+# AlleleFlux Configuration File
+# ============================
+run_name: "perm2"
+
+# Input Files
+# ------------
+# Path specifications for all required input data
+input:
+  bam_dir: "/scratch/gpfs/AMOELLER/diet_manip/copy_sg4230_scratch/sg4230/popgentoolkit/bt2/"  # Directory containing BAM files (used for backward compatibility)
+  fasta_path: "/scratch/gpfs/AMOELLER/diet_manip/copy_sg4230_scratch/sg4230/popgentoolkit/redo_representative_megamag.fa"  # Reference fasta file
+  prodigal_path: "/scratch/gpfs/AMOELLER/diet_manip/copy_sg4230_scratch/sg4230/popgentoolkit/cat_representative_megamag_prodigal.fna"  # Prodigal output
+  metadata_path: "/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_mapq20/permuted/permute_diet_every_other_mouse_md/perm_group_swap_set2.tsv"
+  gtdb_path: "/scratch/gpfs/AMOELLER/diet_manip/copy_sg4230_scratch/sg4230/popgentoolkit/gtdbtk.bac120.summary.tsv"  # GTDB taxonomy information
+  mag_mapping_path: "/scratch/gpfs/AMOELLER/diet_manip/copy_sg4230_scratch/sg4230/popgentoolkit/megamag_mapping.tsv"  # Path to MAG-to-contig mapping file with columns: mag_id, contig_id
+
+
+# Output Directory
+# --------------------
+output:
+  # root_dir: "/workdir1/sidd/for_sam/new_instrain/test_new_version/test_profile_new"  # Root directory for all output files
+  # root_dir: "/workdir1/sidd/for_sam/new_instrain/test_new_version/test_single"
+  root_dir: "/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_mapq20/permuted/perm2"
+
+log_level: "INFO"              # Logging level: DEBUG, INFO, WARNING, ERROR
+
+# Analysis Configuration
+# -----------------------
+# Core settings that control the type and scope of analysis
+analysis:
+  data_type: "longitudinal"           # Options: "single" or "longitudinal"
+  allele_analysis_only: False   # When True, only runs allele analysis and skips scoring/outlier detection
+
+  # Enable/disable specific analysis modules
+  use_lmm: True                 # Linear Mixed Models analysis
+  use_significance_tests: True  # Two-sample and single-sample tests
+  use_cmh: True                 # CMH test for categorical data
+
+  # Timepoints and groups to analyze
+  timepoints_combinations:
+    # For single data type: use a single timepoint in a list
+    # For longitudinal data type: use a dictionary with pair and focus keys
+    # - timepoint: ["end"] 
+    # - timepoint: ["post"]
+    - timepoint: ["pre", "post"]
+      focus: "post"
+    - timepoint: ["pre", "end"]
+      focus: "end"
+    #- timepoint: ["pre", "end"]
+      #focus: "pre"
+    #- timepoint: ["pre", "post"]
+     # focus: "pre"
+    # - timepoint: ["end", "post"]
+    #   focus: "post"
+
+  groups_combinations:
+    - ["fat", "control"]    # Currently active group comparison
+
+# Quality Control Parameters
+# --------------------------
+quality_control:
+  min_sample_num: 8         # Minimum number of samples required for analysis
+  breadth_threshold: 0.1    # Minimum coverage breadth across genome
+  coverage_threshold: 0     # Minimum average coverage depth required to pass
+  disable_zero_diff_filtering: False  # Whether to keep sites with zero difference
+
+# Profiling Parameters
+# --------------------
+# Parameters for pileup generation during sample profiling
+profiling:
+  ignore_orphans: True          # Whether to ignore orphan reads (reads without proper pairs)
+  min_base_quality: 30           # Minimum base quality score to consider
+  min_mapping_quality: 20         # Minimum mapping quality score to consider, this is the mapq filter
+  ignore_overlaps: True          # Whether to ignore overlapping read segments
+
+# Statistical Parameters
+# ----------------------
+statistics:
+  filter_type: "t-test"         # Filter type for two-sample preprocessing: "t-test", "wilcoxon", or "both"
+  preprocess_two_sample: True   # Whether to preprocess data for two-sample tests
+  max_zero_count: 4             # Maximum number of zero values allowed in single-sample test
+  p_value_threshold: 0.05       # P-value threshold for significance
+  fdr_group_by_mag_id: False    # Whether to apply FDR correction separately for each MAG ID
+
+
+# dN/dS Analysis Parameters
+# -------------------------
+# Configuration for evolutionary analysis using dnds_from_timepoints.py
+dnds:
+  p_value_column: "q_value"     # Column for p-value filtering: "min_p_value" or "q_value"
+  dn_ds_test_type: "two_sample_paired_tTest"              # Statistical test type for filtering results
+  # group_analyzed: "fat"       # Need if `dn_ds_test_type` is ["single_sample", "lmm_across_time", "cmh_across_time"]
+
+# Compute Resources
+# -----------------
+# Resources allocated to each step of the workflow
+resources:
+  cpus:
+    threads_per_job: 16      # CPUs for profiling step
+  
+  memory:
+    profile: 100000   
+    quality_control: 200000 # Memory in MB (100 GB) for quality control
+    analyze_alleles: 200000 # Memory in MB (100 GB) for allele analysis
+    significance_test: 200000 # Memory in MB for significance testing
+    dn_ds: 200000
+  
+  time:                     # Runtime limits in format "days-HH:MM:SS"
+    profile: "10:00:00"     # 8 hours for profiling
+    significance_test: "08:00:00"  # 8 hours for significance tests
+    general: "24:02:00"     # 1 hour 2 minutes for general tasks
+

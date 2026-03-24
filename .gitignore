@@ -132,6 +132,5 @@ dmypy.json
 .snakemake
 logs/
 .vscode
+.gemini/
 .github/chatmodes
-__pycache__/
-.ipynb_checkpoints

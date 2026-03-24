@@ -1,6 +1,6 @@
 # DietDrivenMicrobiota
 
-Analysis code and workflows for studying diet-driven allele frequency changes in gut microbiota using [AlleleFlux](https://github.com/MoellerLabPU/AlleleFlux).
+Analysis code and workflows for studying diet-driven allele frequency changes in gut microbiota.
 
 This repository contains the computational analysis pipeline for investigating how dietary interventions (high-fat vs. control diet) shape within-species genetic variation in the mouse gut microbiome. Using longitudinal metagenomic data, we track allele frequency shifts in metagenome-assembled genomes (MAGs) across experimental timepoints and perform statistical testing to identify positions under diet-driven selection.
 
@@ -9,73 +9,79 @@ This repository contains the computational analysis pipeline for investigating h
 ```
 DietDrivenMicrobiota/
 │
-├── scripts/                           # Helper Python scripts
-│   ├── bh_list_sam.py                 # BH-corrected p-value summary across tests
-│   ├── combine_files.py               # Concatenate per-MAG significance files
-│   └── extract_mag_positions.py       # Extract (MAG, contig, position) tuples
+├── figures/                               # Code for generating paper figures
+│   ├── Fig1/                              # Fig 1C-D: Phylogeny + score heatmaps
+│   ├── Fig2/                              # Fig 2: Strain replacement & allele freq visualization
+│   ├── Fig3/                              # Fig 3: Gene-level functional enrichment
+│   ├── Fig4/                              # Fig 4: Phase variation (B. muris)
+│   ├── FigS2_S3_S4/                       # Fig S2-S4: Community diversity analysis
+│   └── FigS5_S6_S7/                       # Fig S5-S7: Supplementary score comparisons
 │
-├── notebooks/                         # Jupyter notebooks for analysis
-│   ├── add_protein_description.ipynb  # Merge p-value summaries with protein annotations
-│   └── isolate_analysis.ipynb         # Isolate-level analysis and visualization
+├── miscellaneous scripts/                 # Helper Python scripts
+│   ├── bh_list_sam.py                     # BH-corrected p-value summary across tests
+│   └── combine_files.py                   # Concatenate per-MAG significance files
 │
-├── configs/                           # Example configuration files
-│   └── visualization_config.yaml      # AlleleFlux visualization workflow config
+├── notebooks/                             # Jupyter notebooks for analysis
+│   ├── add_protein_description.ipynb      # Merge p-value summaries with protein annotations
+│   ├── isolate_analysis.ipynb             # Isolate-level analysis and visualization
+│   └── tested_sites.ipynb                 # Tested sites analysis
 │
-├── megaTable/                         # MegaTable Snakemake workflow
-│   ├── README.md                      # Detailed workflow documentation
+├── megaTable/                             # MegaTable Snakemake workflow
+│   ├── README.md                          # Detailed workflow documentation
 │   ├── MEGATABLE_COLUMN_DOCUMENTATION.md  # Column reference for output tables
-│   ├── create_megatable.smk           # Snakemake workflow
-│   ├── config.yml                     # Workflow configuration
-│   ├── config_mapq2.yml               # Config for MAPQ ≥ 2 analysis
-│   ├── config_mapq20.yml              # Config for MAPQ ≥ 20 analysis
-│   └── profile/                       # SLURM cluster profile
+│   ├── create_megatable.smk               # Snakemake workflow
+│   ├── extract_mag_positions.py           # Extract (MAG, contig, position) tuples
+│   └── config*.yml                        # Workflow configurations
 │
-├── isolate_Bacteroides_muris/         # Bacteroides muris isolate analysis
-│   ├── qc.smk                         # QC workflow (FastQC → fastp → MultiQC)
-│   ├── align.smk                      # Alignment workflow (Bowtie2 → SAMtools)
-│   ├── copy_reads.py                  # Subset & copy isolate reads
-│   ├── prepare_metadat.py             # Generate AlleleFlux metadata from isolate sheet
-│   ├── alleleflux_config.yaml         # AlleleFlux config for isolate analysis
-│   └── slurm_profile/                 # SLURM cluster profile
+├── isolate_Bacteroides_muris/             # B. muris isolate processing pipeline
+│   ├── qc.smk                             # QC workflow (FastQC → fastp → MultiQC)
+│   ├── align.smk                          # Alignment workflow (Bowtie2 → SAMtools)
+│   ├── copy_reads.py                      # Subset & copy isolate reads
+│   ├── prepare_metadat.py                 # Generate AlleleFlux metadata
+│   └── alleleflux_config.yaml             # AlleleFlux config for isolate analysis
 │
-├── LICENSE                            # GNU General Public License v3.0
-└── README.md                          # This file
+├── processing_MAGs/                       # MAG processing commands
+│   ├── QC.txt                             # Quality control (GUNC, CheckM2)
+│   └── MAG_processing.txt                 # Taxonomy, phylogeny, dereplication, mapping
+│
+├── LICENSE                                # GNU General Public License v3.0
+└── README.md                              # This file
 ```
+
+## Figures
+
+Each figure's code is organized in its own subdirectory under [`figures/`](figures/). See the [figures README](figures/README.md) for a quick reference table.
+
+| Figure | Directory | Description |
+|--------|-----------|-------------|
+| Fig 1C-D | [`figures/Fig1/`](figures/Fig1/) | Phylogeny with divergence/parallelism score heatmaps |
+| Fig 2A-C | [`figures/Fig2/`](figures/Fig2/) | Strain replacement (popANI) and allele frequency trajectories |
+| Fig 3 | [`figures/Fig3/`](figures/Fig3/) | Gene-level COG functional enrichment (hypergeometric tests) |
+| Fig 4 | [`figures/Fig4/`](figures/Fig4/) | Phase variation analysis using PhaseFinder |
+| Fig S2-S4 | [`figures/FigS2_S3_S4/`](figures/FigS2_S3_S4/) | Community diversity (relative abundance, Shannon, ANCOM-BC2) |
+| Fig S5-S7 | [`figures/FigS5_S6_S7/`](figures/FigS5_S6_S7/) | Supplementary score comparisons (uses code from Fig 1) |
 
 ## Components
 
-### Helper Scripts (`scripts/`)
+### Miscellaneous Scripts (`miscellaneous scripts/`)
 
 | Script | Description |
 |--------|-------------|
-| `bh_list_sam.py` | Computes Benjamini–Hochberg-corrected p-value summaries across multiple statistical tests (paired/unpaired t-tests, Wilcoxon, LMM, across-time models) for two comparison periods. Outputs both wide summary tables and detailed significant-row lists. |
-| `combine_files.py` | Concatenates per-MAG AlleleFlux significance test result files (paired-sample and single-sample) into unified tables, ensuring MAG ID consistency across file types. |
-| `extract_mag_positions.py` | Extracts and combines unique (MAG, contig, position) tuples from per-MAG AlleleFlux result files. Supports both `two_sample_paired` and `single_sample` test types with group-level partitioning. |
+| `bh_list_sam.py` | Computes BH-corrected p-value summaries across multiple statistical tests for two comparison periods |
+| `combine_files.py` | Concatenates per-MAG AlleleFlux significance test result files into unified tables |
 
 ### MegaTable Workflow (`megaTable/`)
 
-A Snakemake workflow that consolidates AlleleFlux analysis outputs into comprehensive "megatables" combining:
-
-- BH-corrected p-values from multiple statistical tests
-- Per-position coverage and allele frequency statistics
-- Quality control metrics per MAG
-
-See [`megaTable/README.md`](megaTable/README.md) for full documentation, and [`megaTable/MEGATABLE_COLUMN_DOCUMENTATION.md`](megaTable/MEGATABLE_COLUMN_DOCUMENTATION.md) for a complete column reference.
+Snakemake workflow that consolidates AlleleFlux analysis outputs into comprehensive summary tables combining BH-corrected p-values, per-position coverage and allele frequency statistics, and quality control metrics. See [`megaTable/README.md`](megaTable/README.md) for full documentation.
 
 ### Isolate Analysis (`isolate_Bacteroides_muris/`)
 
-Pipeline for processing *Bacteroides muris* isolate sequencing data:
+Pipeline for processing *Bacteroides muris* isolate sequencing data: read subsetting, quality control (FastQC → fastp → MultiQC), alignment (Bowtie2 → SAMtools), and AlleleFlux allele frequency profiling.
 
-1. **Read subsetting** — Identify and copy reads for *B. muris* isolates from the strain library
-2. **Quality control** — FastQC → fastp trimming → FastQC → MultiQC
-3. **Alignment** — Bowtie2 alignment → SAMtools BAM conversion, sorting, and indexing
-4. **AlleleFlux analysis** — Allele frequency profiling and significance testing on isolate data
+### MAG Processing (`processing_MAGs/`)
 
-### Notebooks (`notebooks/`)
+Reference commands for MAG quality control (GUNC, CheckM2), taxonomy assignment (GTDB-Tk), phylogenetic tree construction (IQ-TREE), dereplication (dRep), read mapping (Bowtie2), gene prediction (Prodigal), functional annotation (reCOGnizer), and strain-level profiling (inStrain).
 
-- **`add_protein_description.ipynb`** — Merges p-value summary tables with Prodigal protein annotations for functional context
-- **`isolate_analysis.ipynb`** — Exploratory analysis and visualization of isolate-level AlleleFlux results
+## License
 
-### Visualization Config (`configs/`)
-
-- **`visualization_config.yaml`** — Example configuration for the AlleleFlux visualization workflow, including terminal nucleotide analysis, allele frequency tracking, and plotting parameters
+This project is licensed under the GNU General Public License v3.0 — see [LICENSE](LICENSE) for details.
