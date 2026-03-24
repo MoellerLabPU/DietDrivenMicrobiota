@@ -4,6 +4,11 @@ Panels C and D display a MAG phylogeny alongside heatmaps of AlleleFlux divergen
 
 - **`scores_figs.Rmd`** — R Markdown that builds the phylogeny figure with faceted heatmap panels. Generates variants for each statistical test (paired t-test, Wilcoxon, LMM, CMH) and includes a t-test vs. Wilcoxon score comparison plot.
 
+## Configuration Files
+
+- **`alleleflux_config_mapq20.yml`** — Main AlleleFlux configuration file for the MAPQ 20 analysis.
+- **`alleleflux_config_mapq20_perm[1-3].yml`** — Configuration files for the MAPQ 20 permutation analyses.
+
 ## Workflow
 
 1. Loads AlleleFlux score tables (divergence and parallelism) and a minimum BH q-value summary (`minBH_summary_real.tsv`).
