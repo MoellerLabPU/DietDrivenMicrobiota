@@ -13,7 +13,7 @@ DietDrivenMicrobiota/
 │   ├── Fig1/                              # Fig 1C-D: Phylogeny + score heatmaps
 │   ├── Fig2/                              # Fig 2: Strain replacement & allele freq visualization
 │   ├── Fig3/                              # Fig 3: Gene-level functional enrichment
-│   ├── Fig4/                              # Fig 4: Phase variation (B. muris)
+│   ├── Fig4/                              # Fig 4: Phase variation (P. sartorii and B. muris)
 │   ├── FigS2_S3_S4/                       # Fig S2-S4: Community diversity analysis
 │   └── FigS5_S6_S7/                       # Fig S5-S7: Supplementary score comparisons
 │
@@ -57,7 +57,7 @@ Each figure's code is organized in its own subdirectory under [`figures/`](figur
 | Fig 1C-D | [`figures/Fig1/`](figures/Fig1/) | Phylogeny with divergence/parallelism score heatmaps |
 | Fig 2A-C | [`figures/Fig2/`](figures/Fig2/) | Strain replacement (popANI) and allele frequency trajectories |
 | Fig 3 | [`figures/Fig3/`](figures/Fig3/) | Gene-level COG functional enrichment (hypergeometric tests) |
-| Fig 4 | [`figures/Fig4/`](figures/Fig4/) | Phase variation analysis using PhaseFinder |
+| Fig 4 | [`figures/Fig4/`](figures/Fig4/) | Phase variation analysis (*Phocaeicola sartorii* and *Bacteroides muris* isolates) using PhaseFinder |
 | Fig S2-S4 | [`figures/FigS2_S3_S4/`](figures/FigS2_S3_S4/) | Community diversity (relative abundance, Shannon, ANCOM-BC2) |
 | Fig S5-S7 | [`figures/FigS5_S6_S7/`](figures/FigS5_S6_S7/) | Supplementary score comparisons (uses code from Fig 1) |
 
