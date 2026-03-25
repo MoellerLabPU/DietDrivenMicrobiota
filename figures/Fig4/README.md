@@ -1,6 +1,6 @@
 # Fig 4 — Phase Variation Analysis
 
-Figure 4 presents the phase variation analysis of *Bacteroides muris* isolates using [PhaseFinder](https://github.com/XiaofangJ/PhaseFinder).
+Figure 4 presents the phase variation analysis of *Phocaeicola sartorii* and *Bacteroides muris* isolates using [PhaseFinder](https://github.com/XiaofangJ/PhaseFinder).
 
 ## Code
 
