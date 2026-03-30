@@ -33,12 +33,12 @@ library(picante) #version 1.8.2
 ```
 
 
-####calculate relative abundance of the filtered points####
+#### Calculate relative abundance of the filtered points####
 
 #used fastq stats to count the number of reads in each host filtered sample
 fastq_stats <- read_tsv("fastq_stats.tsv")
 
-#make new column and copy over the values we need to calculate relative abundance
+# Make new column and copy over the values we need to calculate relative abundance
 
 profiles <- lapply(profiles, function(profile) {
     profile[["relative_abundance"]] <- profile[["filtered_read_pair_count"]]
@@ -48,7 +48,7 @@ profiles <- lapply(profiles, function(profile) {
 fastq_stats$file <- gsub("/sn-mg-pipeline/output/qc/host_filter/nonhost/|\\.R1\\.fastq\\.gz", "", fastq_stats$file)
 
 
-#divide filtered_read_pair_count by that value
+# Divide filtered_read_pair_count by that value
 
 #loop through profiles
 profiles <- lapply(names(profiles), function(profile_name) {
@@ -67,10 +67,10 @@ profiles <- lapply(names(profiles), function(profile_name) {
 
 names(profiles) <- fastq_stats$file
 
-##add in missing genomes for each sample with 0 values
+## Add in missing genomes for each sample with 0 values
 
 
-#Remove the .fa from the genome name in each profile
+# Remove the .fa from the genome name in each profile
 profiles <- lapply(profiles, function(profile) {
   if ("genome" %in% colnames(profile)) {
     profile$genome <- sub("\\.fa$", "", profile$genome)  # Remove the .fa suffix
@@ -80,7 +80,7 @@ profiles <- lapply(profiles, function(profile) {
   return(profile)
 })
 
-#Add missing genomes with relative_abundance set to 0
+# Add missing genomes with relative_abundance set to 0
 profiles <- lapply(profiles, function(profile) {
   # Find genomes in md2$user_genome that are not in the profile
   missing_genomes <- setdiff(md2$user_genome, profile$genome)
@@ -108,17 +108,16 @@ profiles <- lapply(profiles, function(profile) { profile$relative_abundance[is.n
 
 #now to normalize the relative abundance by genome size, need to divide each by the genome size
 
-#get the genome size of each genome with count_genome_size.sh
+#get the genome size of each genome and create a tsv file
 
 genome_size <- read_tsv("representative_genome_size.tsv")
 
 
-#function to adjust relative abundance based on genome size
+# Function to adjust relative abundance based on genome size
 adjust_relative_abundance <- function(profile, genome_size) {
     # merge profile with genome_size
     merged_profile <- merge(profile, genome_size, by = "genome", all.x = TRUE)
     
-    # debugging
     if (any(is.na(merged_profile$genome_length))) {
         warning("Some genomes are missing genome_length.")
         print(merged_profile[is.na(merged_profile$genome_length), ])
@@ -130,33 +129,33 @@ adjust_relative_abundance <- function(profile, genome_size) {
     return(merged_profile)
 }
 
-# do this for all profiles
+# Do this for all profiles
 profiles <- lapply(profiles, adjust_relative_abundance, genome_size = genome_size)
 
-#now multiply that by (100/sum of all normalized abundances)
+# Now multiply that by (100/sum of all normalized abundances)
 for (profile_name in names(profiles)) {
   
   profile <- profiles[[profile_name]]
   
-  #get total sum of relative abundances
+  # Get total sum of relative abundances
   total_abundance <- sum(profile$relative_abundance, na.rm = TRUE)
   
-  #normalize
+  # Normalize
   profile$relative_abundance <- profile$relative_abundance * (100 / total_abundance)
   
   profiles[[profile_name]] <- profile
 }
 
-#make a relative abundance matrix
+# Make a relative abundance matrix
 
-#get genome names
+# Get genome names
 all_genomes <- unique(unlist(lapply(profiles, function(profile) profile$genome)))
 
-#make empty matrix
+# Make empty matrix
 relative_abundance_matrix <- matrix(NA, nrow = length(all_genomes), ncol = length(profiles),
                                     dimnames = list(all_genomes, names(profiles)))
 
-#fill with rel abund
+# Fill with rel abund
 for (profile_name in names(profiles)) {
   
   # Access the profile
@@ -169,13 +168,13 @@ for (profile_name in names(profiles)) {
   relative_abundance_matrix[genome_names, profile_name] <- profile$relative_abundance
 }
 
-#filter out blanks
+# Filter out blanks
 relative_abundance_matrix <- relative_abundance_matrix[, !colnames(relative_abundance_matrix) %in% c("BLANK", "EXT_BLANK")]
 
 relative_abundance_matrix[is.na(relative_abundance_matrix)] <- 0
 
 
-#should all = 100 if done correctly
+# Should all = 100 if done correctly
 colSums((relative_abundance_matrix))
 
 #### Alpha Diversity Analysis ####
@@ -204,7 +203,7 @@ diet_levels <- if (include_post) {
   c("control_pre","control_end","fat_pre","fat_end")
 }
 
-# clean md
+# Clean md
 md3_clean <- md3 %>%
   mutate(mouseID = gsub(" ", "", mouseID)) %>%
   select(sample_id, mouseID, diet)
@@ -324,7 +323,7 @@ print(p)
 
 
 
-#list average abundance for each species by diet
+# List average abundance for each species by diet
 # Compute mean relative abundance for each genome in each diet group while keeping the full taxonomy
 genome_diet_abundance <- relative_abundance_long %>%
   group_by(genome, classification, diet) %>%
@@ -336,7 +335,7 @@ genome_diet_abundance
 
 ####
 
-#shannon#######
+# Shannon #######
 
 
 
@@ -375,7 +374,8 @@ p
 
 
 
-#stats
+#### Stats
+# Set seed for reproducibility
 set.seed(123)
 
 
@@ -387,14 +387,14 @@ mouse_md$diet_actual <- ifelse(
 )           
 
 
-#pairwise Wilcoxon tests
+# Pairwise Wilcoxon tests
 pairwise_wilcox <- pairwise.wilcox.test(diversity_df$shannon_index, diversity_df$diet, p.adjust.method = "BH")  # Adjusting for multiple comparisons using Benjamini-Hochberg
 
 
 print(pairwise_wilcox)
 
 
-#summary stats
+# Summary stats
 
 
 diversity_summary_stats <- relative_abundance_long %>%
@@ -478,7 +478,7 @@ sample_data <- sample_data(mouse_md)
 
 physeq_ancom <- phyloseq(otu_table, phylo_tree, sample_data)
 
-#run ancombc2
+# Run ancombc2
 
 run_ancombc2 <- function(physeq, group_name) {
   res <- tryCatch({
@@ -609,7 +609,7 @@ plot_df <- rbind(control_post_vs_pre, control_end_vs_pre, fat_post_vs_pre, fat_e
 plot_df_p <- plot_df[plot_df$p_value != 1, ]
 plot_df_q <- plot_df[plot_df$q_value != 1, ]
 
-### OR plot_df_p and plot_df_q without filtering out points
+### OR alternatively plot_df_p and plot_df_q without filtering out points
 #plot_df_p <- plot_df
 #plot_df_q <- plot_df
 
@@ -623,13 +623,13 @@ comparison_colors <- c("Control_Post_vs_Pre" = "#648FFF",
                        "Fat_Post_vs_Pre" = "#EA2284",      
                        "Fat_End_vs_Pre" = "#FF6C0B")       
 
-# function to draw polygons around points
+# Function to draw polygons around points
 draw_polygon <- function(data, color) {
   hull <- data[chull(data$LFC, -log10(data$p_value)), ]
   geom_polygon(data = hull, aes(x = LFC, y = -log10(p_value)), fill = NA, color = color, size = 1, linetype = "solid")
 }
 
-# volcano plot for p_value
+# Volcano plot for p_value
 volcano_p <- ggplot(plot_df_p, aes(x = LFC, y = -log10(p_value), color = comparison_group)) +
   geom_point(size = 2, alpha = 0.8) +  # smaller points with transparency
   scale_color_manual(values = comparison_colors) +
@@ -677,12 +677,12 @@ for (group in unique(plot_df_q$comparison_group)) {
   }
 }
 
-# Display the plots
+
 print(volcano_p)
 print(volcano_q)
 
 
-#ancom dfs with results and taxonomy to label points 
+# Ancom dfs with results and taxonomy to label points 
 
 # Merge control results with md2 based on taxon and user_genome
 control_results <- res_list$control
