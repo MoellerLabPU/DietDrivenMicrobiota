@@ -194,9 +194,7 @@ relative_abundance_long <- relative_abundance_long %>%
   left_join(mouse_md %>% distinct(sample, .keep_all = TRUE), by = "sample")
 
 
-# assume relative_abundance_long is already in your environment
 
-#option to exclude post timepoints
 include_post <- TRUE   # FALSE will drop control_post & fat_post
 
 diet_levels <- if (include_post) {
@@ -389,10 +387,10 @@ mouse_md$diet_actual <- ifelse(
 )           
 
 
-# Perform pairwise Wilcoxon tests
+#pairwise Wilcoxon tests
 pairwise_wilcox <- pairwise.wilcox.test(diversity_df$shannon_index, diversity_df$diet, p.adjust.method = "BH")  # Adjusting for multiple comparisons using Benjamini-Hochberg
 
-# Display the results
+
 print(pairwise_wilcox)
 
 
@@ -548,7 +546,7 @@ extract_results <- function(res, group) {
   
   combined_res <- list()
   
-  # Check if each result exists and rename columns appropriately
+  # Check if each result exists and rename columns
   if (!is.null(res$res_dunn)) {
     colnames(res$res_dunn) <- paste0("dunn_", colnames(res$res_dunn))
     combined_res$res_dunn <- res$res_dunn
@@ -619,19 +617,19 @@ plot_df_q <- plot_df[plot_df$q_value != 1, ]
 plot_df_p$group <- ifelse(plot_df_p$LFC > 0, "overrepresented", "underrepresented")
 plot_df_q$group <- ifelse(plot_df_q$LFC > 0, "overrepresented", "underrepresented")
 
-# Define colors for each comparison group
+
 comparison_colors <- c("Control_Post_vs_Pre" = "#648FFF",  
                        "Control_End_vs_Pre" = "#674ED6",    
                        "Fat_Post_vs_Pre" = "#EA2284",      
                        "Fat_End_vs_Pre" = "#FF6C0B")       
 
-# Create a function to draw polygons around points
+# function to draw polygons around points
 draw_polygon <- function(data, color) {
   hull <- data[chull(data$LFC, -log10(data$p_value)), ]
   geom_polygon(data = hull, aes(x = LFC, y = -log10(p_value)), fill = NA, color = color, size = 1, linetype = "solid")
 }
 
-# Create the volcano plot for p_value
+# volcano plot for p_value
 volcano_p <- ggplot(plot_df_p, aes(x = LFC, y = -log10(p_value), color = comparison_group)) +
   geom_point(size = 2, alpha = 0.8) +  # smaller points with transparency
   scale_color_manual(values = comparison_colors) +
@@ -642,7 +640,7 @@ volcano_p <- ggplot(plot_df_p, aes(x = LFC, y = -log10(p_value), color = compari
   ) +
   theme_classic()
 
-# Add polygons around overrepresented and underrepresented groups for each comparison group for p_value
+# Add polygons
 for (group in unique(plot_df_p$comparison_group)) {
   for (status in c("overrepresented", "underrepresented")) {
     group_data <- plot_df_p %>% filter(comparison_group == !!group & group == !!status)
