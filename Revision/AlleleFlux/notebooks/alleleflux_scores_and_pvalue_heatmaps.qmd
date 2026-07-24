@@ -1,0 +1,845 @@
+---
+title: "AlleleFlux — parallelism & divergence scores + p-value heatmaps"
+author: "Siddharth Uppal"
+date: today
+date-format: "YYYY-MM-DD"
+format:
+  html:
+    theme: flatly
+    toc: true
+    toc-location: left
+    embed-resources: true
+    code-fold: true
+    code-summary: "Show code"
+    code-tools: true
+execute:
+  warning: false
+  message: false
+---
+
+## What this notebook is
+
+A **dataset-generic** port of the DRIDO AlleleFlux figures (`drido/test.qmd` +
+`drido/significant_sites_heatmap/significant_sites_heatmap.qmd`). It builds three things
+from any AlleleFlux run, driven entirely by the `params` chunk below:
+
+Every figure is drawn **once per period** (`sel_periods`, e.g. `pre_post` and `pre_end`) — periods
+are never combined into one faceted figure.
+
+1. **Parallelism score** — the *within-group* (`single_sample`) score: for each MAG, the % of
+   its sites that changed significantly **within** a group over time. Plotted as a paired
+   box+point+line figure, one "side" per group.
+2. **Divergence score** — the *between-group* score: the % of a MAG's sites that diverge
+   **between** treatment and control. The between-group test type is a knob (`div_test`):
+   `two_sample_paired` (paired t-test, the default here) or `two_sample_unpaired`. This score is
+   only interpretable against a permutation **null**, so it is drawn as **Observed vs Permuted**,
+   and is skipped unless `permuted_run_dir` is set.
+3. **p-value summary heatmaps** — MAG × (test|group) heatmaps where **cell colour = % of sites
+   significant** (raw-p by default) and the **`*` / `**` / `***` stars = min BH-corrected q**.
+   Rows are split and colour-barred by GTDB taxonomy.
+
+**To retarget another dataset:** change `run_dir` (and `permuted_run_dir`, `gtdb_path`) in the
+`params` chunk. Everything downstream discovers timepoints, group-pairs and tests from the data.
+
+**Score vocabulary** (AlleleFlux): *parallelism* = within-group `single_sample`; *divergence* =
+between-group `two_sample`. Each "score" = % of a MAG's tested sites that are significant.
+
+```{r setup}
+# tidyverse drives the score (paired) plots; data.table + ComplexHeatmap drive the heatmaps.
+# data.table is loaded FIRST so tidyverse's verbs win any name clash (we only ever call dplyr
+# verbs on tibbles and data.table `[` on data.tables, so they never actually collide).
+suppressPackageStartupMessages({
+  library(data.table)
+  library(tidyverse)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(grid)
+})
+```
+
+## Parameters (the only knobs)
+
+```{r params}
+# ===================== DATASET KNOBS — edit these to retarget ========================
+# `run_dir` is a run's data-type directory (holds scores/, p_value_summary/, ...).
+run_dir <- "/scratch/gpfs/AMOELLER/sidd/diet_manip/revision_July_2026/AlleleFlux_revision/AlleleFlux/longitudinal"
+
+# GTDB taxonomy table (user_genome + classification); used for the heatmap taxonomy bar.
+gtdb_path <- "/scratch/gpfs/AMOELLER/diet_manip/gtdbtk.bac120.summary.tsv"
+
+# Permutation / null run's data-type dir, for the DIVERGENCE Observed-vs-Permuted plot.
+# "" -> the divergence section is skipped with instructions on how to generate the null.
+# Example once a null exists: file.path(dirname(run_dir), "permuted", "perm_42", "longitudinal")
+permuted_run_dir <- ""
+
+# Where the figure PNGs are written (created if absent).
+fig_dir <- "/home/su2806/DietDrivenMicrobiota/Revision/AlleleFlux/notebooks/figures"
+
+# Categorical timepoint order, used when timepoint labels are NOT numeric ages (e.g. "10mo").
+# DRIDO used numeric ages (auto-ordered); the diet run uses pre/post/end (ordered by this).
+timepoint_levels <- c("pre", "post", "end")
+
+# Periods to plot. Each one gets its OWN score figure and its own heatmap — they are never
+# combined into a single faceted figure. Set to character(0) for every period in the run.
+sel_periods <- c("pre_post", "pre_end")
+
+# Group pair used by the heatmap section.
+sel_group_pair <- "fat_control"
+
+# ===================== SCORE-PLOT KNOBS ===============================================
+par_test <- "tTest" # parallelism: which within-group score, -> "score_<par_test>_<group> (%)"
+
+# TEST TYPE for the between-group (divergence) comparison. AlleleFlux writes one score file per
+# test kind, so this both picks the score files and names the heatmap column:
+#   "two_sample_paired"   -> paired t-test (subjects matched across the two timepoints)
+#   "two_sample_unpaired" -> unpaired t-test (the DRIDO reference default)
+div_test <- "two_sample_paired"
+div_score_col <- "score_tTest (%)" # divergence column (no group suffix); also e.g. "score_tTest_abs (%)"
+
+# Saved-PNG size (inches) for the score plots and the heatmaps. Keep these in step with the
+# chunk-level fig.width/fig.height so the saved file matches what the document shows.
+score_fig_width <- 9
+score_fig_height <- 9
+hm_fig_width <- 12
+hm_fig_height <- 12
+
+# ===================== HEATMAP KNOBS ==================================================
+# Which tests become heatmap columns: parallelism (single_sample) + the divergence test chosen
+# above, both t-tests. Override with an explicit vector to show more (e.g. Wilcoxon, _abs).
+tests <- c("single_sample_tTest", paste0(div_test, "_tTest"))
+value <- "pct_sig_p" # cell colour: raw-p % sites significant ("pct_sig_q" for FDR-based %)
+tax_rank <- "phylum" # taxonomy rank for the row colour bar / grouping (rows are split by it)
+
+# ===================== DERIVED PATHS (don't edit) =====================================
+scores_mag_dir <- file.path(run_dir, "scores", "processed", "combined", "MAG")
+pval_input <- file.path(
+  run_dir,
+  "p_value_summary",
+  "significant_sites_summary",
+  "significant_sites_mag_cell_stats_long.tsv"
+)
+dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
+
+cat("run_dir        :", run_dir, "\n")
+cat("scores_mag_dir :", scores_mag_dir, "\n")
+cat("div_test       :", div_test, "\n")
+cat("heatmap tests  :", paste(tests, collapse = ", "), "\n")
+cat(
+  "sel_periods    :",
+  if (length(sel_periods)) {
+    paste(sel_periods, collapse = ", ")
+  } else {
+    "(all periods)"
+  },
+  "\n"
+)
+cat(
+  "pval_input     :",
+  pval_input,
+  if (file.exists(pval_input)) " [found]" else " [MISSING]",
+  "\n"
+)
+cat(
+  "permuted_run_dir:",
+  if (nzchar(permuted_run_dir)) {
+    permuted_run_dir
+  } else {
+    "(none — divergence-vs-null skipped)"
+  },
+  "\n"
+)
+```
+
+## Shared timepoint ordering (generic)
+
+DRIDO timepoints are numeric ages (`5mo_22mo`); the diet run's are categorical (`pre_end`,
+`pre_post`). These helpers order **either** kind: parse a trailing number if present, else fall
+back to `timepoint_levels`, else alphabetical.
+
+```{r tp-helpers}
+# The later endpoint of a period: "pre_end" -> "end", "5mo_22mo" -> "22mo".
+period_endpoint <- function(period) sub("^.*_", "", period)
+
+# Rank a single timepoint label. Numeric age (last run of digits) wins; else its position in
+# timepoint_levels; else NA (sorted last by order()).
+tp_num <- function(label) {
+  suppressWarnings(as.numeric(str_extract(label, "[0-9]+(?=[^0-9]*$)")))
+}
+tp_rank <- function(label) {
+  n <- tp_num(label)
+  ifelse(!is.na(n), n, match(label, timepoint_levels))
+}
+
+# Order a vector of PERIODS by their endpoint rank (tie-break on the start token).
+tp_order <- function(periods) {
+  er <- tp_rank(period_endpoint(periods))
+  sr <- tp_rank(sub("_.*$", "", periods))
+  if (all(is.na(er))) {
+    return(sort(periods))
+  }
+  periods[order(er, sr)]
+}
+```
+
+# Parallelism & divergence scores
+
+Both figures are the **same plot**: for one group-pair, two "sides" per MAG, faceted by
+timepoint, a line linking each MAG across its two sides (coloured by whether the focal side is
+higher or lower). Only the data source and the words differ. (Ported verbatim from
+`drido/test.qmd`; only `tp_order` was generalised.)
+
+```{r paired-core}
+# --- ONE plot function for any paired comparison ---------------------
+plot_paired_group <- function(
+  df,
+  pair,
+  y_label,
+  title_prefix,
+  subtitle,
+  ref_word,
+  focal_word,
+  hline = 5
+) {
+  d <- df %>%
+    filter(pair_id == pair) %>%
+    group_by(timepoint, MAG_ID) %>%
+    filter(n_distinct(side) == 2) %>% # keep MAGs present on BOTH sides at that timepoint
+    ungroup() %>%
+    mutate(
+      timepoint = factor(timepoint, levels = tp_order(unique(timepoint))),
+      side = factor(side, levels = c("ref", "focal")),
+      Group = fct_reorder(Group, as.integer(side)) # ref left, focal right
+    )
+
+  hi <- str_c("Higher in ", focal_word)
+  lo <- str_c("Lower in ", focal_word)
+
+  direction <- d %>%
+    select(timepoint, MAG_ID, side, Score) %>%
+    pivot_wider(names_from = side, values_from = Score) %>%
+    mutate(Direction = if_else(focal >= ref, hi, lo)) %>%
+    select(timepoint, MAG_ID, Direction)
+  d <- left_join(d, direction, by = c("timepoint", "MAG_ID"))
+
+  ggplot(d, aes(x = Group, y = Score)) +
+    geom_hline(yintercept = hline, linetype = "dashed", linewidth = 0.6) +
+    geom_line(
+      aes(group = MAG_ID, color = Direction),
+      alpha = 0.6,
+      linewidth = 0.5
+    ) +
+    geom_boxplot(
+      aes(fill = side),
+      outlier.shape = NA,
+      alpha = 0.8,
+      width = 0.6
+    ) +
+    geom_point(
+      aes(fill = side),
+      shape = 21,
+      color = "grey20",
+      size = 2.8,
+      alpha = 0.7
+    ) +
+    scale_fill_manual(
+      values = c(ref = "grey80", focal = "#9966CC"),
+      labels = c(
+        ref = str_to_title(ref_word),
+        focal = str_to_title(focal_word)
+      ),
+      name = NULL
+    ) +
+    scale_color_manual(
+      values = setNames(c("#9966CC", "grey50"), c(hi, lo)),
+      name = NULL
+    ) +
+    facet_wrap(vars(timepoint), scales = "free_x", nrow = 1) +
+    labs(
+      title = str_c(title_prefix, unique(d$comparison)),
+      subtitle = subtitle,
+      x = NULL,
+      y = y_label
+    ) +
+    theme_classic(base_size = 16) +
+    theme(
+      legend.position = "bottom",
+      legend.box = "vertical", # stack the two legends so wide labels never clip
+      legend.text = element_text(size = 13),
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 19),
+      plot.subtitle = element_text(hjust = 0.5, size = 13),
+      strip.text = element_text(face = "bold", size = 15)
+    )
+}
+
+# Which periods to draw, in order: `sel_periods` (if set) intersected with what's present.
+periods_present <- function(available) {
+  if (length(sel_periods)) {
+    sel_periods[sel_periods %in% available]
+  } else {
+    tp_order(unique(available))
+  }
+}
+
+# --- ONE driver: a SEPARATE figure per period x group-pair -----------
+run_paired <- function(
+  df,
+  y_label,
+  title_prefix,
+  subtitle,
+  ref_word,
+  focal_word,
+  file_prefix,
+  save_dir = fig_dir
+) {
+  if (nrow(df) == 0) {
+    cat("No data for this comparison — nothing to plot.\n")
+    return(invisible(NULL))
+  }
+  periods <- periods_present(df$timepoint)
+  if (length(periods) == 0) {
+    cat(
+      "None of sel_periods present in the score files (have: ",
+      paste(sort(unique(df$timepoint)), collapse = ", "),
+      ")\n",
+      sep = ""
+    )
+    return(invisible(NULL))
+  }
+  plots <- list()
+  for (per in periods) {
+    d_per <- filter(df, timepoint == per)
+    for (pair in sort(unique(d_per$pair_id))) {
+      p <- plot_paired_group(
+        d_per,
+        pair,
+        y_label,
+        title_prefix,
+        subtitle,
+        ref_word,
+        focal_word
+      )
+      print(p)
+      key <- str_c(pair, "_", per)
+      plots[[key]] <- p
+      ggsave(
+        file.path(save_dir, str_c(file_prefix, key, ".png")),
+        p,
+        width = score_fig_width,
+        height = score_fig_height,
+        dpi = 300,
+        limitsize = FALSE
+      )
+    }
+  }
+  invisible(plots)
+}
+
+# ================= LOADERS -> canonical long schema ==================
+# Canonical schema: timepoint, pair_id, comparison, MAG_ID, side ("ref"/"focal"), Group, Score
+
+# Parallelism: single_sample, two group-specific files per pair.
+#   scores_single_sample-<period>-<groupA>_<groupB>_<focus>-MAGs.tsv
+#   ref = groupB (second token), focal = the other. `test` picks score_<test>_<focus> (%).
+load_parallelism <- function(dir, test = "tTest") {
+  parse_one <- function(path) {
+    core <- basename(path) %>%
+      str_remove("^scores_single_sample-") %>%
+      str_remove("-MAGs\\.tsv$")
+    parts <- str_split(core, "-", simplify = TRUE) # c("<period>", "<gA>_<gB>_<focus>")
+    toks <- str_split(parts[2], "_", simplify = TRUE) # c(gA, gB, focus)
+    tibble(
+      path = path,
+      timepoint = parts[1],
+      groupA = toks[1],
+      groupB = toks[2],
+      focus = toks[3],
+      pair_id = str_c(toks[1], "_", toks[2]),
+      comparison = str_c(toks[1], " vs ", toks[2])
+    )
+  }
+  files <- list.files(
+    dir,
+    pattern = "^scores_single_sample-.*-MAGs\\.tsv$",
+    full.names = TRUE
+  )
+  if (length(files) == 0) {
+    return(tibble())
+  }
+  map_dfr(files, parse_one) %>%
+    mutate(
+      data = pmap(list(path, focus, groupB), function(p, f, gB) {
+        df <- read_tsv(p, show_col_types = FALSE)
+        sc <- str_c("score_", test, "_", f, " (%)")
+        if (!sc %in% names(df)) {
+          warning("No column '", sc, "' in ", basename(p))
+          return(NULL)
+        }
+        tibble(
+          MAG_ID = df[["MAG_ID"]],
+          Score = df[[sc]],
+          side = if_else(f == gB, "ref", "focal"),
+          Group = f
+        )
+      })
+    ) %>%
+    filter(!map_lgl(data, is.null)) %>%
+    select(timepoint, pair_id, comparison, data) %>%
+    unnest(data)
+}
+
+# Divergence: the SAME file read from the observed vs permuted output, for whichever
+# between-group test `test` names ("two_sample_paired" or "two_sample_unpaired").
+#   scores_<test>-<period>-<groupA>_<groupB>-MAGs.tsv
+#   ref = Permuted, focal = Observed. score_col has no group suffix, e.g. "score_tTest (%)".
+load_divergence <- function(
+  observed_dir,
+  permuted_dir,
+  score_col,
+  test = "two_sample_paired"
+) {
+  file_re <- str_c("^scores_", test, "-.*-MAGs\\.tsv$")
+  parse_one <- function(path) {
+    core <- basename(path) %>%
+      str_remove(str_c("^scores_", test, "-")) %>%
+      str_remove("-MAGs\\.tsv$")
+    parts <- str_split(core, "-", simplify = TRUE) # c("<period>", "<gA>_<gB>")
+    toks <- str_split(parts[2], "_", simplify = TRUE)
+    tibble(
+      path = path,
+      timepoint = parts[1],
+      pair_id = parts[2],
+      comparison = str_c(toks[1], " vs ", toks[2])
+    )
+  }
+  read_side <- function(path, side_lbl, group_lbl) {
+    df <- read_tsv(path, show_col_types = FALSE)
+    if (!score_col %in% names(df)) {
+      warning("No '", score_col, "' in ", basename(path))
+      return(NULL)
+    }
+    tibble(
+      MAG_ID = df[["MAG_ID"]],
+      Score = df[[score_col]],
+      side = side_lbl,
+      Group = group_lbl
+    )
+  }
+  files <- list.files(observed_dir, pattern = file_re, full.names = TRUE)
+  if (length(files) == 0) {
+    return(tibble())
+  }
+  map_dfr(files, parse_one) %>%
+    mutate(
+      data = map(path, function(p) {
+        perm <- file.path(permuted_dir, basename(p))
+        if (!file.exists(perm)) {
+          warning("No permuted file for ", basename(p))
+          return(NULL)
+        }
+        bind_rows(
+          read_side(perm, "ref", "Permuted"),
+          read_side(p, "focal", "Observed")
+        )
+      })
+    ) %>%
+    filter(!map_lgl(data, is.null)) %>%
+    select(timepoint, pair_id, comparison, data) %>%
+    unnest(data)
+}
+```
+
+## Parallelism score (within-group)
+
+One figure per period in `sel_periods`; the left/grey box is the reference group and the
+right/purple box is the focal group. A dashed line marks the 5% threshold. Score column used:
+`score_<par_test>_<group> (%)`.
+
+```{r parallelism, fig.width=11, fig.height=10}
+par_df <- load_parallelism(scores_mag_dir, test = par_test)
+if (nrow(par_df) == 0) {
+  cat("No single_sample MAG score files found under:\n  ", scores_mag_dir, "\n")
+} else {
+  run_paired(
+    par_df,
+    y_label = "Parallelism Score (%)",
+    title_prefix = str_c("Parallelism scores (", par_test, "): "),
+    subtitle = "Within-group change over time",
+    ref_word = "reference group",
+    focal_word = "focal group",
+    file_prefix = "parallelism_"
+  )
+}
+```
+
+## Divergence score (between-group, vs null)
+
+The divergence score is only interpretable against a permutation **null**: the same
+`div_test` score (default `two_sample_paired`, i.e. the paired t-test) computed on label-shuffled
+data. This figure contrasts the **Observed** score (purple) against the **Permuted** null (grey).
+It renders only when `permuted_run_dir` points at a completed null run; otherwise it is skipped.
+
+```{r divergence, fig.width=11, fig.height=10}
+if (!nzchar(permuted_run_dir)) {
+  cat("Skipped: no `permuted_run_dir` set.\n")
+} else {
+  permuted_mag_dir <- file.path(
+    permuted_run_dir,
+    "scores",
+    "processed",
+    "combined",
+    "MAG"
+  )
+  if (!dir.exists(permuted_mag_dir)) {
+    cat(
+      "Divergence-vs-null SKIPPED: permuted MAG scores dir not found:\n  ",
+      permuted_mag_dir,
+      "\n"
+    )
+  } else {
+    div_df <- load_divergence(
+      scores_mag_dir,
+      permuted_mag_dir,
+      div_score_col,
+      test = div_test
+    )
+    if (nrow(div_df) == 0) {
+      cat(
+        "No matching observed/permuted ",
+        div_test,
+        " score files found.\n",
+        sep = ""
+      )
+    } else {
+      run_paired(
+        div_df,
+        y_label = str_c("Divergence Score (%) - ", div_score_col),
+        title_prefix = str_c("Divergence scores (", div_test, "): "),
+        subtitle = str_c(div_score_col, " - Permuted vs Observed"),
+        ref_word = "permuted",
+        focal_word = "observed",
+        file_prefix = str_c("divergence_", div_test, "_")
+      )
+    }
+  }
+}
+```
+
+# p-value summary heatmaps
+
+**Cell colour** = `value` (% of a MAG's sites significant; raw-p by default). **Stars** = the
+smallest BH-corrected `q` in that cell (`*` q<0.05, `**` q<0.01, `***` q<0.001). "Not tested"
+cells are grey. Input is `significant_sites_mag_cell_stats_long.tsv` from
+`significant_sites_summary.py`.
+
+```{r heatmap-input-guard}
+if (!file.exists(pval_input)) {
+  cat(
+    "HEATMAP INPUT MISSING:\n  ",
+    pval_input,
+    "\n\n",
+    "This table is produced automatically by the pipeline's `significant_sites_summary` rule.\n",
+    "To (re)generate it manually with the packaged CLI:\n\n",
+    "  alleleflux-significant-sites-summary \\\n",
+    "      --input-dir ",
+    file.path(run_dir, "p_value_summary"),
+    " \\\n",
+    "      --outdir    ",
+    file.path(run_dir, "p_value_summary", "significant_sites_summary"),
+    " \\\n",
+    "      --q-threshold 0.05 --p-threshold 0.05 --cpus 8\n\n",
+    "Then re-render. The heatmap chunks below will no-op until it exists.\n",
+    sep = ""
+  )
+  have_pval <- FALSE
+} else {
+  have_pval <- TRUE
+}
+```
+
+```{r heatmap-fns}
+# % colour scale: plasma, stretched to the LARGEST % actually observed (not a fixed 0-100),
+# so the full colour range is used. Built once per figure set, hence a factory.
+plasma_cols <- c(
+  "#0D0887",
+  "#6A00A8",
+  "#B12A90",
+  "#E16462",
+  "#FCA636",
+  "#F0F921"
+)
+make_pct_col <- function(max_pct) {
+  hi <- if (is.finite(max_pct) && max_pct > 0) max_pct else 1
+  colorRamp2(seq(0, hi, length.out = length(plasma_cols)), plasma_cols)
+}
+# min-q colour: bright = very significant (q~0), dark = not (q~1), fixed [0,1].
+minq_col <- colorRamp2(
+  c(0, 0.25, 0.5, 0.75, 1),
+  c("#FDE725", "#5DC863", "#21908C", "#3B528B", "#440154")
+)
+# Legend titles follow whichever `value` column is being coloured.
+pct_legend_title <- if (value == "pct_sig_q") {
+  "% of sites\nq < 0.05"
+} else {
+  "% of sites\np < 0.05"
+}
+# Star key, drawn alongside the two colour legends.
+star_legend <- Legend(
+  labels = c("p < 0.001", "p < 0.01", "p < 0.05"),
+  title = "Significance",
+  type = "points",
+  pch = c("***", "**", "*"),
+  legend_gp = gpar(col = "black"),
+  background = "white"
+)
+
+# Significance stars from ONE q value (scalar by design — called per cell).
+q_stars <- function(q) {
+  if (is.na(q)) {
+    ""
+  } else if (q < 0.001) {
+    "***"
+  } else if (q < 0.01) {
+    "**"
+  } else if (q < 0.05) {
+    "*"
+  } else {
+    ""
+  }
+}
+draw_star <- function(s, x, y, size, col = "black") {
+  grid.text(s, x, y, gp = gpar(fontsize = size, col = col))
+}
+
+# Long -> wide MAG × (test|group) matrix of `value_col`. Two-sample tests (no group) get a
+# label of just the test name; single-sample get "test|group". Untested MAG×col -> NA (grey).
+build_matrix <- function(df, value_col) {
+  df[,
+    col_label := fifelse(
+      is.na(group_analyzed) | group_analyzed == "",
+      as.character(test_type),
+      paste(test_type, group_analyzed, sep = "|")
+    )
+  ]
+  wide <- dcast(df, mag_id ~ col_label, value.var = value_col)
+  mat <- as.matrix(wide[, -1])
+  rownames(mat) <- wide$mag_id
+  mat
+}
+
+# Display labels for those columns: two short lines, e.g. "within\ncontrol (tTest)" and
+# "between paired\n(tTest)". The matrix keeps its raw AlleleFlux names.
+pretty_cols <- function(cn) {
+  test <- sub("\\|.*$", "", cn)
+  grp <- ifelse(grepl("\\|", cn), sub("^.*\\|", "", cn), NA_character_)
+  kind <- ifelse(
+    grepl("^single_sample", test),
+    "within",
+    ifelse(
+      grepl("^two_sample_paired", test),
+      "between paired",
+      ifelse(grepl("^two_sample_unpaired", test), "between unpaired", test)
+    )
+  )
+  stat <- sub(
+    "^(single_sample|two_sample_paired|two_sample_unpaired)_",
+    "",
+    test
+  )
+  ifelse(
+    is.na(grp),
+    sprintf("%s\n(%s)", kind, stat),
+    sprintf("%s %s\n(%s)", kind, grp, stat)
+  )
+}
+
+# Two-panel: % (left) + min-q (right, with q-stars overlaid). Rows are NOT clustered — they are
+# split and colour-barred by GTDB `tax_rank`, ordered within each taxon by total % significant.
+two_panel <- function(
+  mat_pct,
+  mat_minq,
+  title,
+  pct_col,
+  star_size = 8,
+  star_col = "black"
+) {
+  tax <- tax_of(rownames(mat_pct), tax_rank)
+  ord <- order(tax, -rowSums(mat_pct, na.rm = TRUE))
+  mat_pct <- mat_pct[ord, , drop = FALSE]
+  mat_minq <- mat_minq[ord, , drop = FALSE]
+  tax <- tax[ord]
+  row_split <- factor(tax, levels = names(sort(table(tax), decreasing = TRUE)))
+  left_anno <- rowAnnotation(
+    taxon = tax,
+    col = list(taxon = make_tax_colors(tax)),
+    show_annotation_name = FALSE,
+    width = unit(3, "mm"),
+    annotation_legend_param = list(taxon = list(title = tax_rank))
+  )
+
+  # Fixed body width per column: whatever is left over goes to the legends, so long taxon
+  # names in the phylum legend are never cut off.
+  body_w <- function(m) unit(27 * ncol(m), "mm")
+
+  ht_pct <- Heatmap(
+    mat_pct,
+    name = value,
+    col = pct_col,
+    width = body_w(mat_pct),
+    na_col = "grey85",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    row_split = row_split,
+    left_annotation = left_anno,
+    row_title = NULL, # taxon identity comes from the colour bar + its legend
+    show_row_names = FALSE,
+    column_labels = pretty_cols(colnames(mat_pct)),
+    column_names_rot = 0,
+    column_names_centered = TRUE,
+    column_names_gp = gpar(fontsize = 9),
+    column_title = sprintf("%s\n%% sites significant", title),
+    heatmap_legend_param = list(title = pct_legend_title)
+  )
+  ht_minq <- Heatmap(
+    mat_minq,
+    name = "min q",
+    col = minq_col,
+    width = body_w(mat_minq),
+    na_col = "grey85",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    show_row_names = FALSE,
+    column_labels = pretty_cols(colnames(mat_minq)),
+    column_names_rot = 0,
+    column_names_centered = TRUE,
+    column_names_gp = gpar(fontsize = 9),
+    column_title = "Min BH-corrected p-value",
+    heatmap_legend_param = list(
+      title = "Min BH-corrected\np-value",
+      at = seq(0, 1, 0.2)
+    ),
+    cell_fun = function(j, i, x, y, w, h, fill) {
+      s <- q_stars(mat_minq[i, j])
+      if (nzchar(s)) draw_star(s, x, y, star_size, star_col)
+    }
+  )
+  draw(
+    ht_pct + ht_minq,
+    merge_legends = TRUE,
+    annotation_legend_list = list(star_legend),
+    padding = unit(c(2, 2, 2, 2), "mm")
+  )
+}
+```
+
+```{r tax-load}
+# GTDB taxonomy -> MAG -> rank lookup.
+gtdb <- fread(
+  gtdb_path,
+  sep = "\t",
+  select = c("user_genome", "classification")
+)
+tax_ranks <- c(
+  "domain",
+  "phylum",
+  "class",
+  "order",
+  "family",
+  "genus",
+  "species"
+)
+gtdb[, (tax_ranks) := tstrsplit(classification, ";", fixed = TRUE)]
+for (r in tax_ranks) {
+  gtdb[[r]] <- sub("^[a-z]__", "", gtdb[[r]])
+}
+setkey(gtdb, user_genome)
+
+tax_of <- function(mags, rank = "phylum") {
+  v <- gtdb[mags][[rank]]
+  v[is.na(v) | v == ""] <- "Unclassified"
+  v
+}
+make_tax_colors <- function(taxa) {
+  u <- setdiff(sort(unique(taxa)), "Unclassified")
+  cols <- setNames(grDevices::hcl.colors(max(length(u), 1L), "Dark 3"), u)
+  c(cols, Unclassified = "grey70")
+}
+cat(sprintf("Loaded GTDB: %d genomes.\n", nrow(gtdb)))
+```
+
+```{r heatmap-load}
+if (have_pval) {
+  df_all <- fread(pval_input, sep = "\t")
+  cat(sprintf(
+    "Loaded %d cell rows | comparisons: %s | group_pairs: %s | tests: %d\n",
+    nrow(df_all),
+    paste(sort(unique(df_all$comparison)), collapse = ", "),
+    paste(sort(unique(df_all$group_pair)), collapse = ", "),
+    uniqueN(df_all$test_type)
+  ))
+  missing_tests <- setdiff(tests, unique(df_all$test_type))
+  if (length(missing_tests)) {
+    warning(
+      "Tests not present in data: ",
+      paste(missing_tests, collapse = ", ")
+    )
+  }
+}
+```
+
+## Two panels per period (% + min-q with stars)
+
+One figure per period in `sel_periods`, for `sel_group_pair`, restricted to `tests`. **All tested
+MAGs** are shown — no signal filter. Left = % sites significant, right = min BH q with
+significance stars. Rows are **split and colour-barred by GTDB `tax_rank`** (no clustering), and
+within each taxon are ordered by total % significant. The % colour scale is shared across the
+periods and runs from 0 to the largest % observed in any of them, so the panels are comparable.
+
+```{r heatmap-two-panel, fig.width=12, fig.height=12}
+if (have_pval) {
+  hm_all <- df_all[group_pair == sel_group_pair & test_type %in% tests]
+  hm_periods <- periods_present(hm_all$period)
+  if (length(hm_periods) == 0) {
+    cat(
+      "No heatmap rows for group_pair =",
+      sel_group_pair,
+      "with tests:",
+      paste(tests, collapse = ", "),
+      "\n"
+    )
+  } else {
+    # One colour scale for every period: 0 -> the largest % seen in any of them.
+    pct_col <- make_pct_col(max(
+      hm_all[period %in% hm_periods][[value]],
+      na.rm = TRUE
+    ))
+    for (per in hm_periods) {
+      d <- hm_all[period == per]
+      mat <- build_matrix(d, value)
+      mat_minq <- build_matrix(d, "min_q_value")
+      # Every tested MAG is shown; MAGs with no signal simply read as 0%.
+      cat(sprintf(
+        "%s: %d MAGs shown (%d with >=1 significant site)\n",
+        per,
+        nrow(mat),
+        sum(rowSums(mat > 0, na.rm = TRUE) > 0)
+      ))
+      ttl <- sprintf("%s-%s - all tested MAGs", per, sel_group_pair)
+      two_panel(mat, mat_minq, ttl, pct_col)
+      # Same figure again, this time straight to a PNG (ComplexHeatmap draws to a device,
+      # so there is no ggsave equivalent — we simply redraw inside png()/dev.off()).
+      png(
+        file.path(
+          fig_dir,
+          sprintf("pvalue_heatmap_%s-%s.png", per, sel_group_pair)
+        ),
+        width = hm_fig_width,
+        height = hm_fig_height,
+        units = "in",
+        res = 300
+      )
+      two_panel(mat, mat_minq, ttl, pct_col)
+      dev.off()
+    }
+  }
+}
+```
