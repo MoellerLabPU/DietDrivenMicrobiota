@@ -1,11 +1,11 @@
 ```{r phylogeny fig mapq20}
-#scores
+# Scores
 control_mapq20 <- read_tsv("scores_single_sample-pre_end-fat_control_control-MAGs.tsv")
 fat_mapq20 <-  read_tsv("scores_single_sample-pre_end-fat_control_fat-MAGs.tsv")
 div_mapq20 <-  read_tsv("scores_two_sample_paired-pre_end-fat_control-MAGs.tsv")
 
 
-# prep minBH
+# Prep minBH
 
 min_BH <- read_tsv("minBH_summary_real.tsv")
 
@@ -75,14 +75,14 @@ tip_metadata_tbl <- data.frame(label = sgb_tree$tip.label) %>%
   as_tibble()
 
 
-#Plot the Tree with Tip Dots Colored by Phylum
+# Plot the Tree with Tip Dots Colored by Phylum
 
 sgb_tree_ultrametric <- chronos(sgb_tree)
 
 phylum_colors <- setNames(rainbow(length(unique(tip_metadata_tbl$phylum))),
                           unique(tip_metadata_tbl$phylum))
 
-# base tree
+# Base tree
 p <- ggtree(sgb_tree_ultrametric, layout = "rectangular") %<+% tip_metadata_tbl +
   geom_tree(aes(color = phylum), linewidth = 0.6) +   # <- branch color
   scale_color_manual(values = phylum_colors, name = "phylum") +
@@ -141,7 +141,7 @@ sig_paired <- mapq20_div_min_by_mag %>%
         TRUE ~ ""
     ), xpos = 3)
 
-# tree and heatmap panels
+# Tree and heatmap panels
 
 p2 <- facet_plot(p, panel = "Test Scores", data = testscore_long, geom = geom_tile,
                  mapping = aes(x = xpos, fill = Score), width = 0.5) +
@@ -149,7 +149,8 @@ p2 <- facet_plot(p, panel = "Test Scores", data = testscore_long, geom = geom_ti
   scale_fill_viridis_c(name = "Score", option = "C", na.value = "gray")
 
 p2
-#Control Heatmap
+
+# Control Heatmap
 p2 <- p2 + new_scale_fill()
 p3 <- facet_plot(p2, panel = "control min q", data = heatmap_data_control,
                  geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
@@ -160,7 +161,8 @@ p3 <- facet_plot(p2, panel = "control min q", data = heatmap_data_control,
                          labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) 
     
 p3
-#Fat Heatmap
+
+# Fat Heatmap
 p3 <- p3 + new_scale_fill()
 p4 <- facet_plot(p3, panel = "fat min q", data = heatmap_data_fat,
                  geom = geom_tile, mapping = aes(x = xpos, fill = q_mapq20), width = 0.3) %>%
@@ -171,6 +173,7 @@ p4 <- facet_plot(p3, panel = "fat min q", data = heatmap_data_fat,
                          labels = c("0", "0.2", "0.4", "0.6", "0.8", "1")) +
     theme_minimal()
 p4
+
 # Divergence Heatmap 
 p4 <- p4 + new_scale_fill()
 p5 <- facet_plot(p4, panel = "div min q", data = heatmap_data_paired,
@@ -183,14 +186,15 @@ p5 <- facet_plot(p4, panel = "div min q", data = heatmap_data_paired,
     theme_classic()
 
 
-#final plot
+# Final plot
 print(p5)
 
 
 ```
 
 ```{r phylogeny fig mapq20 wilcoxon}
-#scores
+
+# Scores
 control_mapq20 <- read_tsv("scores_single_sample-pre_end-fat_control_control-MAGs.tsv")
 fat_mapq20 <-  read_tsv("scores_single_sample-pre_end-fat_control_fat-MAGs.tsv")
 div_mapq20 <-  read_tsv("scores_two_sample_paired-pre_end-fat_control-MAGs.tsv")
@@ -214,6 +218,7 @@ fat_minBH <- min_BH %>%
   filter(period == "pre_end",
          group_analyzed == "fat",
          test_type == "single_sample_Wilxocon")
+
 # Use the new min-BH subsets to feed the panels
 mapq20_par_control_min <- control_minBH %>%
   dplyr::select(mag_id, q_mapq20 = q_value)
@@ -253,6 +258,7 @@ mapq20_joined <- base_tax %>%
   left_join(div_scores,     by = "MAG_ID") %>%
   left_join(control_scores, by = "MAG_ID") %>%
   left_join(fat_scores,     by = "MAG_ID")
+
 tip_metadata_tbl <- data.frame(label = sgb_tree$tip.label) %>%
   left_join(mapq20_joined %>% select(MAG_ID, phylum),
             by = c("label" = "MAG_ID")) %>%
