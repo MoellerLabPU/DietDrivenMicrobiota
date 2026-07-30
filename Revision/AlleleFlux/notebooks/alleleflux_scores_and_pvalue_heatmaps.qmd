@@ -70,7 +70,7 @@ gtdb_path <- "/scratch/gpfs/AMOELLER/diet_manip/gtdbtk.bac120.summary.tsv"
 # Permutation / null run's data-type dir, for the DIVERGENCE Observed-vs-Permuted plot.
 # "" -> the divergence section is skipped with instructions on how to generate the null.
 # Example once a null exists: file.path(dirname(run_dir), "permuted", "perm_42", "longitudinal")
-permuted_run_dir <- ""
+permuted_run_dir <- "/scratch/gpfs/AMOELLER/sidd/diet_manip/revision_July_2026/AlleleFlux_revision/AlleleFlux/permuted/perm1/longitudinal"
 
 # Where the figure PNGs are written (created if absent).
 fig_dir <- "/home/su2806/DietDrivenMicrobiota/Revision/AlleleFlux/notebooks/figures"

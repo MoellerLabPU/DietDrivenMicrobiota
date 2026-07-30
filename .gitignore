@@ -134,3 +134,5 @@ logs/
 .vscode
 .gemini/
 .github/chatmodes
+# Generated figures from the per-litter boxplot notebook (re-run the notebook to regenerate)
+Revision/AlleleFlux/notebooks/figures/
