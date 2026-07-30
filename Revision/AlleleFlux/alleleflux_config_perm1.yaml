@@ -1,0 +1,180 @@
+
+run_name: "AlleleFlux_revision_perm1"
+
+# Input Files
+# ------------
+input:
+  # The Fig1 config's fasta_path (copy_sg4230_scratch/popgentoolkit/...) no longer
+  # exists; the reference and its .fai now live one level up.
+  fasta_path: "/scratch/gpfs/AMOELLER/diet_manip/redo_representative_megamag.fa"  # Reference FASTA file
+  prodigal_path: "/scratch/gpfs/AMOELLER/diet_manip/cat_representative_megamag_prodigal.fna"  # Prodigal nucleic acid output (.fna)
+  # Corrected copy of .../popgentoolkit/metadata_md_bam.tsv — identical except that
+  # `bam_path` points at the live BAMs under copy_sg4230_scratch/ instead of the
+  # dead /scratch/gpfs/sg4230/ paths. Regenerate with fix_bam_paths.py.
+  metadata_path: "/scratch/gpfs/AMOELLER/sidd/diet_manip/revision_July_2026/metadata_md_bam_fixed.tsv"  # Sample metadata (needs sample_id + bam_path)
+  gtdb_path: "/scratch/gpfs/AMOELLER/diet_manip/gtdbtk.bac120.summary.tsv"  # GTDB taxonomy
+  mag_mapping_path: "/scratch/gpfs/AMOELLER/diet_manip/megamag_mapping.tsv"  # MAG-to-contig mapping (mag_id, contig_id)
+  # PERM RUN: reuse the completed real run's data-type dir (profiles/QC/allele_freq_cache reused;
+  # only the group-dependent tail is recomputed on the permuted labels). Must be .../longitudinal.
+  reuse_from: "/scratch/gpfs/AMOELLER/sidd/diet_manip/revision_July_2026/AlleleFlux_revision/AlleleFlux/longitudinal"
+
+# Output Directory
+# ----------------
+output:
+  root_dir: "/scratch/gpfs/AMOELLER/sidd/diet_manip/revision_July_2026/AlleleFlux_revision/AlleleFlux/permuted/perm1"  # PERM RUN: per-seed output dir (was .../AlleleFlux)
+
+log_level: "INFO"                 # Logging level: DEBUG, INFO, WARNING, ERROR
+
+# Analysis Configuration
+# ----------------------
+analysis:
+  data_type: "longitudinal"       # "single" (one timepoint) or "longitudinal" (multiple timepoints)
+  allele_analysis_only: False     # When True, only runs allele analysis and skips scoring/outlier detection
+
+  # Enable/disable specific analysis modules
+  use_lmm: True                   # Linear Mixed Models
+  use_significance_tests: True    # Two-sample (t-test, Mann-Whitney) and single-sample tests
+  use_cmh: True                   # Cochran-Mantel-Haenszel stratified categorical analysis
+  use_regional_contrast: False     # NEW (no equivalent in the mapq20 config): gene/window-level
+  use_dnds: False                  # dN/dS (Nei-Gojobori) — parameters in the `dnds:` section below
+  run_within_group_tests: False   # PERM RUN: divergence null only needs the between-group test (BYO does not auto-disable this)
+  use_gene_scores: False           # Gene-level significance scores (mapq20 run produced these)
+  use_outlier_detection: False     # Outlier gene detection (mapq20 run produced outlier_genes/)
+  taxa_score_levels: []
+
+  # Timepoints and groups to analyze
+  timepoints_combinations:
+    - timepoint: ["pre", "post"]
+      focus: "post"
+    - timepoint: ["pre", "end"]
+      focus: "end"
+
+  # NOTE: groups are now explicit treatment/control mappings, not a bare 2-element list.
+  groups_combinations:
+    - treatment: "fat"
+      control: "control"
+
+# Permutation (null / control) runs
+# ----------------------------------
+# Replaces the separate alleleflux_config_mapq20_perm{1,2,3}.yml files used for Fig1.
+# Requires input.reuse_from to point at a COMPLETED real run's data-type output dir
+# (e.g. /scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_revision/longitudinal).
+# PERM RUN — BYO (bring-your-own) mode: feed the pre-made Fig1 swap sheet instead of
+# shuffling internally. The pipeline reads <permuted_metadata_dir>/permuted_metadata_fat_control.tsv
+# (naming = permuted_metadata_<treatment>_<control>.tsv) and relabels groups in memory via sample_id.
+# In BYO mode unit/block/swaps/n_permutations/output_subdir are IGNORED (kept below for reference only).
+permutation:
+  enabled: True                   # BYO perm run
+  permuted_metadata_dir: "/scratch/gpfs/AMOELLER/sidd/diet_manip/revision_July_2026/AlleleFlux_revision/AlleleFlux/permuted/perm1"  # same as output.root_dir; sheet sits here, outputs go to <root>/longitudinal/
+  unit: "subjectID"               # IGNORED in BYO mode
+  block: ""                       # IGNORED in BYO mode
+  swaps: null                     # IGNORED in BYO mode
+  n_permutations: 3               # IGNORED in BYO mode (BYO = one sheet-set per run)
+  output_subdir: "permuted"       # IGNORED in BYO mode
+
+# Quality Control Parameters
+# --------------------------
+quality_control:
+  min_sample_num: 8               # Minimum samples required for analysis
+  breadth_threshold: 0.5          # Minimum coverage breadth (fraction of genome covered)
+  coverage_threshold: 1           # Minimum average coverage depth to pass QC
+  disable_zero_diff_filtering: False  # Keep sites with zero difference between groups
+
+# Profiling Parameters
+# --------------------
+profiling:
+  ignore_orphans: True            # Ignore orphan reads (without proper pairs)
+  min_base_quality: 30            # Minimum base quality score to consider
+  min_mapping_quality: 20         # MAPQ filter — 20, as in the mapq20 run
+  ignore_overlaps: True           # Ignore overlapping read segments
+
+# Statistical Parameters
+# ----------------------
+statistics:
+  filter_type: "t-test"           # Preprocessing filter: "t-test", "wilcoxon", or "both"
+  # `preprocess_two_sample` was split into the two keys below.
+  preprocess_between_groups: True # Preprocess data for between-groups tests
+  preprocess_within_groups: True  # Preprocess data for within-group tests
+  max_zero_count: 4               # Maximum zeros allowed in single-sample test
+  p_value_threshold: 0.05         # P-value threshold for significance
+  fdr_group_by_mag_id: False      # Apply FDR correction per MAG
+  min_positions_after_preprocess: 1  # NEW: minimum positions after preprocessing
+
+# dN/dS Analysis Parameters
+# -------------------------
+dnds:
+  p_value_column: "q_value"       # Column for filtering: "min_p_value" or "q_value"
+  dn_ds_test_type: "two_sample_paired_tTest"  # Test type for filtering results
+  # group_analyzed: "fat"         # Needed if dn_ds_test_type is single_sample / lmm_across_time / cmh_across_time
+
+# Regional Contrast Parameters
+# ----------------------------
+# NEW section (no equivalent in the mapq20 config) — template defaults kept.
+regional_contrast:
+  mode: "both"                    # "gene", "window", or "both"
+  window_size: 1000               # Non-overlapping tile width in bp
+  agg_method: "median"            # "median", "mean", or "trimmed_mean"
+  min_informative_sites: 5        # Minimum sites present per region (0 disables)
+  min_informative_fraction: 0.0   # Minimum fraction of region length covered (0.0 disables)
+  use_fisher: True                # Also compute Fisher combined p-values from percentile ranks
+
+# Compute Resources
+# -----------------
+# Tune for Princeton Della cluster; SLURM profile can override
+resources:
+  threads_per_job: 8
+  mem_per_job: "100G"
+  time: "8:00:00"
+  retries: 2                     # Number of retries per job
+  mem_step: "50G"                # Memory added per retry
+  time_step: "4:00:00"           # Time added per retry
+
+# Advanced: Per-rule resource overrides (power users only)
+# ---------------------------------------------------------
+resources_override:
+  profile:                       # Rule: profile (sample profiling)
+    threads_per_job: 4
+    mem_per_job: "32G"
+    time: "12:00:00"
+    mem_step: "16G"
+    time_step: "12:00:00"
+  qc:          
+    threads_per_job: 8                  # Rule: qc (quality control)
+    mem_per_job: "100G"
+    time: "12:00:00"
+  allele_freq_cache:              # Rule: allele_freq_cache
+    mem_per_job: "250G"
+    mem_step: "100G"
+    threads_per_job: 8
+  allele_analysis:               # Rule: allele_analysis
+    mem_per_job: "350G"
+    mem_step: "150G"              # 250→400→550→700→850 GB across 4 retries
+    retries: 4                    
+    time_step: "12:00:00"
+  statistical_tests:             # All statistical test rules
+    threads_per_job: 4
+    mem_per_job: "200G"
+    mem_step: "50G"
+    time: "02:00:00"
+  dnds_from_timepoints:          # Rule: dnds_from_timepoints
+    threads_per_job: 1
+    mem_per_job: "200G"
+    time: "8:00:00"
+  preprocess_between_groups:
+    mem_per_job: "60G"
+    time: "04:00:00"
+    mem_step: "30G"           
+    time_step: "01:30:00"
+  preprocess_within_groups:
+    mem_per_job: "60G"
+    time: "04:00:00"
+    mem_step: "30G"
+    time_step: "01:30:00"
+  significance_score_per_MAG_standard:
+    mem_per_job: "30G"
+    time: "2:00:00"
+    mem_step: "30G"
+    time_step: "01:30:00"
+  p_value_summary:
+    mem_per_job: "16G"     # measured ~2 GB; 8× headroom
+    time: "01:10:00"
