@@ -17,33 +17,6 @@ execute:
   message: false
 ---
 
-## What this notebook is
-
-A **dataset-generic** port of the DRIDO AlleleFlux figures (`drido/test.qmd` +
-`drido/significant_sites_heatmap/significant_sites_heatmap.qmd`). It builds three things
-from any AlleleFlux run, driven entirely by the `params` chunk below:
-
-Every figure is drawn **once per period** (`sel_periods`, e.g. `pre_post` and `pre_end`) — periods
-are never combined into one faceted figure.
-
-1. **Parallelism score** — the *within-group* (`single_sample`) score: for each MAG, the % of
-   its sites that changed significantly **within** a group over time. Plotted as a paired
-   box+point+line figure, one "side" per group.
-2. **Divergence score** — the *between-group* score: the % of a MAG's sites that diverge
-   **between** treatment and control. The between-group test type is a knob (`div_test`):
-   `two_sample_paired` (paired t-test, the default here) or `two_sample_unpaired`. This score is
-   only interpretable against a permutation **null**, so it is drawn as **Observed vs Permuted**,
-   and is skipped unless `permuted_run_dir` is set.
-3. **p-value summary heatmaps** — MAG × (test|group) heatmaps where **cell colour = % of sites
-   significant** (raw-p by default) and the **`*` / `**` / `***` stars = min BH-corrected q**.
-   Rows are split and colour-barred by GTDB taxonomy.
-
-**To retarget another dataset:** change `run_dir` (and `permuted_run_dir`, `gtdb_path`) in the
-`params` chunk. Everything downstream discovers timepoints, group-pairs and tests from the data.
-
-**Score vocabulary** (AlleleFlux): *parallelism* = within-group `single_sample`; *divergence* =
-between-group `two_sample`. Each "score" = % of a MAG's tested sites that are significant.
-
 ```{r setup}
 # tidyverse drives the score (paired) plots; data.table + ComplexHeatmap drive the heatmaps.
 # data.table is loaded FIRST so tidyverse's verbs win any name clash (we only ever call dplyr
@@ -321,14 +294,17 @@ run_paired <- function(
       print(p)
       key <- str_c(pair, "_", per)
       plots[[key]] <- p
-      ggsave(
-        file.path(save_dir, str_c(file_prefix, key, ".png")),
-        p,
-        width = score_fig_width,
-        height = score_fig_height,
-        dpi = 300,
-        limitsize = FALSE
-      )
+      # Same figure to PNG (for the rendered document) and PDF (vector, for the paper).
+      for (ext in c(".png", ".pdf")) {
+        ggsave(
+          file.path(save_dir, str_c(file_prefix, key, ext)),
+          p,
+          width = score_fig_width,
+          height = score_fig_height,
+          dpi = 300,
+          limitsize = FALSE
+        )
+      }
     }
   }
   invisible(plots)
@@ -582,10 +558,12 @@ pct_legend_title <- if (value == "pct_sig_q") {
 } else {
   "% of sites\np < 0.05"
 }
-# Star key, drawn alongside the two colour legends.
+# Star key, drawn alongside the two colour legends. The stars come from `min_q_value` (see
+# q_stars / the min-q panel's cell_fun), so the thresholds are on the BH-corrected q — NOT
+# on the raw p. Label them as q so the legend matches what is actually being thresholded.
 star_legend <- Legend(
-  labels = c("p < 0.001", "p < 0.01", "p < 0.05"),
-  title = "Significance",
+  labels = c("q < 0.001", "q < 0.01", "q < 0.05"),
+  title = "Significance\n(BH-corrected)",
   type = "points",
   pch = c("***", "**", "*"),
   legend_gp = gpar(col = "black"),
@@ -668,7 +646,8 @@ two_panel <- function(
   mat_minq <- mat_minq[ord, , drop = FALSE]
   tax <- tax[ord]
   row_split <- factor(tax, levels = names(sort(table(tax), decreasing = TRUE)))
-  left_anno <- rowAnnotation(
+  # Colour bar lives on the far RIGHT of the composite, opposite the MAG labels on the left.
+  right_anno <- rowAnnotation(
     taxon = tax,
     col = list(taxon = make_tax_colors(tax)),
     show_annotation_name = FALSE,
@@ -689,9 +668,10 @@ two_panel <- function(
     cluster_rows = FALSE,
     cluster_columns = FALSE,
     row_split = row_split,
-    left_annotation = left_anno,
     row_title = NULL, # taxon identity comes from the colour bar + its legend
-    show_row_names = FALSE,
+    show_row_names = TRUE, # MAG ids on the y-axis, left edge of the composite
+    row_names_side = "left",
+    row_names_gp = gpar(fontsize = 8),
     column_labels = pretty_cols(colnames(mat_pct)),
     column_names_rot = 0,
     column_names_centered = TRUE,
@@ -708,6 +688,7 @@ two_panel <- function(
     cluster_rows = FALSE,
     cluster_columns = FALSE,
     show_row_names = FALSE,
+    right_annotation = right_anno,
     column_labels = pretty_cols(colnames(mat_minq)),
     column_names_rot = 0,
     column_names_centered = TRUE,
@@ -758,10 +739,29 @@ tax_of <- function(mags, rank = "phylum") {
   v[is.na(v) | v == ""] <- "Unclassified"
   v
 }
+# Fixed phylum palette, so a phylum keeps its colour across every figure. Only the phyla
+# actually present are kept, so the legend never lists taxa that are absent from the panel.
+phylum_palette <- c(
+  "Firmicutes_A" = "#B0182B",
+  "Firmicutes" = "#1F6FB4",
+  "Firmicutes_B" = "#9C9C9C",
+  "Desulfobacterota_I" = "#2FA37F",
+  "Deferribacterota" = "#E0C64A",
+  "Campylobacterota" = "#7FC8E8",
+  "Bacteroidota" = "#1E8A8C",
+  "Unclassified" = "grey70"
+)
 make_tax_colors <- function(taxa) {
-  u <- setdiff(sort(unique(taxa)), "Unclassified")
-  cols <- setNames(grDevices::hcl.colors(max(length(u), 1L), "Dark 3"), u)
-  c(cols, Unclassified = "grey70")
+  u <- sort(unique(taxa))
+  known <- intersect(names(phylum_palette), u)
+  unknown <- setdiff(u, known)
+  if (length(unknown)) {
+    warning(
+      "Phyla with no entry in `phylum_palette` (drawn grey): ",
+      paste(unknown, collapse = ", ")
+    )
+  }
+  c(phylum_palette[known], setNames(rep("grey85", length(unknown)), unknown))
 }
 cat(sprintf("Loaded GTDB: %d genomes.\n", nrow(gtdb)))
 ```
@@ -825,17 +825,26 @@ if (have_pval) {
       ))
       ttl <- sprintf("%s-%s - all tested MAGs", per, sel_group_pair)
       two_panel(mat, mat_minq, ttl, pct_col)
-      # Same figure again, this time straight to a PNG (ComplexHeatmap draws to a device,
-      # so there is no ggsave equivalent — we simply redraw inside png()/dev.off()).
+      # Same figure again, once per output format (ComplexHeatmap draws to a device, so
+      # there is no ggsave equivalent — we simply redraw inside <device>()/dev.off()).
+      # PNG for the rendered document, PDF (vector) for the paper.
+      stem <- file.path(
+        fig_dir,
+        sprintf("pvalue_heatmap_%s-%s", per, sel_group_pair)
+      )
       png(
-        file.path(
-          fig_dir,
-          sprintf("pvalue_heatmap_%s-%s.png", per, sel_group_pair)
-        ),
+        paste0(stem, ".png"),
         width = hm_fig_width,
         height = hm_fig_height,
         units = "in",
         res = 300
+      )
+      two_panel(mat, mat_minq, ttl, pct_col)
+      dev.off()
+      pdf(
+        paste0(stem, ".pdf"),
+        width = hm_fig_width, # pdf() takes inches directly — no `units`/`res`
+        height = hm_fig_height
       )
       two_panel(mat, mat_minq, ttl, pct_col)
       dev.off()
