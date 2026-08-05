@@ -1,0 +1,573 @@
+# Phocaeicola sartorii Pre vs End ANI workflow.
+#
+# Question: did the same P. sartorii strain persist in a mouse from
+# Pre-Treatment to End, and does that hold in both Fat and Control?
+#
+# ---------------------------------------------------------------------------
+# FLOW  (keep this in sync when rules change)
+#
+#   Moeller_Lab_Bacterial_Isolate_Library.xlsx  +  Shared_Folder/assemblies
+#           |
+#   [copy_assemblies] ............. copies *.fna.gz; writes sartorii_metadata.tsv
+#           |
+#   [fix_metadata] ................ applies DIET_FIXES; writes metadata_curated.tsv
+#           |
+#   [pair_table] .................. Pre x End counts per mouse, BEFORE filtering
+#           |                       -> pair_table.tsv, genomes_input.txt
+#           |
+#           +--> [seqkit_stats] ... assembly stats, REPORT ONLY, filters nothing
+#           |                       -> qc_seqkit.tsv
+#           |
+#           +--> [checkm2] ........ completeness / contamination
+#                     |            -> checkm2/quality_report.tsv
+#                     |
+#                [filter_hq] ...... MIMAG high-quality bar; THIS ONE FILTERS
+#                     |            -> genomes_hq.txt, genomes_excluded.tsv
+#                     |
+#          +----------+----------+
+#          |                     |
+#   [pair_table_hq]        genomes_hq.txt (full paths)
+#   design AFTER filter          |
+#   -> pair_table_hq.tsv         |
+#                     +----------+-----------+
+#                     |                       |
+#              [skani_pairs]           [skani_matrix]
+#              -E --ci, per {mode}     dense, per {mode}
+#              -> skani_pairs_*.tsv    -> skani_matrix_*.txt
+#                     |
+#               [annotate] .......... annotate_ani.py; classifies every pair
+#                     |               -> pairs_annotated_*.tsv
+#
+# {mode} = slow (--slow, primary) and default (sensitivity check).
+# Only Pre-Treatment and End isolates are used throughout.
+# ---------------------------------------------------------------------------
+#
+# Logs: PROJ/smk_logs/<YYYY-MM-DD_HHMMSS>/<rule>.log, one directory per run.
+#
+#   export PATH=/local1/workdir1/sidd/miniforge3/bin:$PATH   # conda frontend
+#   snakemake -n --use-conda        # dry run, shows the plan
+#   snakemake --use-conda --cores 16    # run  (--use-conda is REQUIRED:
+#                                   #  without it the checkm2 rule's conda:
+#                                   #  directive is silently ignored)
+#   snakemake --dag | dot -Tpng > dag.png
+
+import logging
+import os
+from datetime import datetime
+
+import pandas as pd
+
+PROJ   = "/workdir1/sidd/for_sam/Revision/Psartorii_ANI"
+ASM    = f"{PROJ}/assemblies"
+META   = f"{PROJ}/sartorii_metadata.tsv"
+XLSX   = f"{PROJ}/Moeller_Lab_Bacterial_Isolate_Library.xlsx"
+OUT    = f"{PROJ}/ani"
+
+# SEQKIT = "/programs/seqkit-2.13.0/seqkit"
+# SKANI  = "/programs/skani-0.3.1/skani"
+
+SRC = workflow.basedir          # this directory; where annotate_ani.py lives
+
+THREADS = 16
+TIMEPOINTS = ["Pre-Treatment", "End"]
+
+# Every skani step runs twice, once per sensitivity setting, and each gets its
+# own annotation and matrix. "slow" is the primary analysis (chosen for the
+# fragmented assemblies here); "default" exists so you can show the Pre-vs-End
+# conclusion does not depend on that choice. The value is the extra flag.
+MODES = {"slow": "--slow", "default": ""}
+
+# CheckM2's conda environment, given as a NAME. It must be a name, not a path:
+# Snakemake 7.32 activates a path-specified env fine but then records
+# provenance with `conda env export --name <path>`, and conda rejects a path as
+# a name -- so the job fails AFTER the command has already succeeded.
+#
+# Activation matters beyond finding checkm2 itself: CheckM2 shells out to
+# diamond and prodigal, which are found via PATH. Without activation it starts,
+# validates the database, then dies with "Make sure diamond is on your system
+# path."
+#
+# REQUIRES `snakemake --use-conda`. Without that flag the conda: directive is
+# silently ignored and this rule fails with "checkm2: command not found".
+CHECKM2_ENV = "checkm2"
+
+CHECKM2_DB = "/workdir1/dbs/CheckM2_database_v3/CheckM2_database/uniref100.KO.1.dmnd"
+
+# Metadata after DIET_FIXES; what every rule downstream of fix_metadata reads.
+META_CURATED = f"{OUT}/metadata_curated.tsv"
+
+# One timestamped directory per invocation, one descriptively named log per
+# rule inside it (wildcarded rules get one log per {mode}). Snakemake creates
+# the directories, and a missing log never triggers a re-run, so previous runs
+# are kept as a record rather than overwritten.
+# Snakemake parses this file TWICE per invocation -- once in the main process
+# to build the DAG, and again in the subprocess that executes run: directives.
+# A plain datetime.now() therefore produces two different timestamps and two
+# log directories per run. setdefault pins it: the first parse sets the
+# variable, the subprocess inherits the environment and keeps the same value.
+# (Exporting SMK_RUN_ID yourself pins the directory name for a whole session.)
+RUN = os.environ.setdefault("SMK_RUN_ID",
+                            datetime.now().strftime("%Y-%m-%d_%H%M%S"))
+LOGS = f"{PROJ}/smk_logs/{RUN}"
+
+
+# stdlib logging, set up per rule: one handler writes the rule's log file, the
+# other keeps the output on the console.
+def log_to(path):
+    logging.basicConfig(level=logging.INFO, format="%(message)s", force=True,
+                        handlers=[logging.FileHandler(path, "w"),
+                                  logging.StreamHandler()])
+
+
+# Corrections to the spreadsheet, applied by fix_metadata so they are explicit
+# and survive regeneration of sartorii_metadata.tsv.
+#
+# Mouse 578 was recorded as Control at Pre-Treatment and Fat at End -- the same
+# animal under two diets. Confirmed to be Fat. Without this it is split into two
+# single-timepoint rows and contributes NO Pre x End pairs; with it, 578 becomes
+# a paired mouse in the Fat arm.
+DIET_FIXES = {578: "Fat"}
+
+
+# Shared by both pair-table rules so the before- and after-filtering views of
+# the design cannot drift apart.
+def pair_counts(meta, label):
+    """Pre x End pair counts per mouse. Returns the table; logs a summary."""
+    meta = meta[meta["Host.Collection.Timepoint"].isin(TIMEPOINTS)].copy()
+    meta["stage"] = meta["Host.Collection.Timepoint"].map(
+        {"Pre-Treatment": "n_pre", "End": "n_end"})
+
+    tab = (meta.groupby(["Host.Diet", "Host.ID", "stage"]).size()
+               # fill_value=0: a mouse sampled at only one timepoint gets a 0 in
+               # the other column rather than NaN, so n_pairs is 0 rather than
+               # NaN and the mouse still shows up in the table.
+               .unstack("stage", fill_value=0)
+               .reset_index()
+               .rename(columns={"Host.Diet": "diet", "Host.ID": "host"}))
+    # If filtering removed a timepoint entirely, unstack won't create its
+    # column at all; add it back so n_pairs is still computable.
+    for col in ("n_pre", "n_end"):
+        if col not in tab:
+            tab[col] = 0
+    tab["n_pairs"] = tab["n_pre"] * tab["n_end"]
+
+    logging.info(f"\n===== {label}: {len(meta)} isolates =====")
+    logging.info(tab.to_string(index=False))
+
+    paired = tab[tab["n_pairs"] > 0]
+    if paired.empty:
+        logging.info("\nNO mouse has isolates at both timepoints -- "
+                     "the Pre vs End comparison is not possible on this set.")
+    else:
+        logging.info("\nper diet:")
+        logging.info(paired.groupby("diet")
+                           .agg(n_mice=("host", "nunique"),
+                                n_pairs=("n_pairs", "sum")).to_string())
+        logging.info(f"total Pre x End pairs: {paired['n_pairs'].sum()} "
+                     f"across {paired['host'].nunique()} mice")
+    return meta, tab
+
+
+rule all:
+    input:
+        f"{OUT}/qc_seqkit.tsv",
+        f"{OUT}/genomes_excluded.tsv",
+        f"{OUT}/pair_table_hq.tsv",
+        expand(f"{OUT}/pairs_annotated_{{mode}}.tsv", mode=MODES),
+        expand(f"{OUT}/table_within_host_{{mode}}.tsv", mode=MODES),
+        expand(f"{OUT}/skani_matrix_{{mode}}.txt", mode=MODES),
+
+
+# Step 0: pull the P. sartorii assemblies out of the shared folder and build
+# the metadata table everything downstream reads. This is the only rule that
+# touches the shared folder or the Excel workbook.
+#
+# The script holds its own paths; the rule declares the metadata table so
+# Snakemake knows this step comes first. The assemblies directory is not an
+# output: directory() outputs get deleted and rebuilt, and 120 MB of assemblies
+# should not be at the mercy of a stale timestamp.
+rule copy_assemblies:
+    input:
+        xlsx=XLSX,
+    output:
+        meta=META,
+    log:
+        f"{LOGS}/copy_assemblies.log",
+    shell:
+        "python3 {SRC}/copy_sartorii_genomes.py > {log} 2>&1"
+
+
+# Apply DIET_FIXES once, here, so every downstream rule and annotate_ani.py all
+# read the same corrected metadata. Prints what changed.
+rule fix_metadata:
+    input:
+        meta=META,
+    output:
+        META_CURATED,
+    log:
+        f"{LOGS}/fix_metadata.log",
+    run:
+        log_to(log[0])
+        meta = pd.read_csv(input.meta, sep="\t")
+        for host, diet in DIET_FIXES.items():
+            hit = meta["Host.ID"] == host
+            before = sorted(meta.loc[hit, "Host.Diet"].unique())
+            meta.loc[hit, "Host.Diet"] = diet
+            logging.info(f"host {host}: diet {before} -> '{diet}' "
+                  f"({hit.sum()} isolates)")
+        meta.to_csv(output[0], sep="\t", index=False)
+
+
+# Which isolates exist at each timepoint, and how many Pre x End pairs that
+# gives per mouse. Also emits the genome list every later rule works from.
+rule pair_table:
+    input:
+        meta=META_CURATED,
+    output:
+        table=f"{OUT}/pair_table.tsv",
+        genomes=f"{OUT}/genomes_input.txt",
+    log:
+        f"{LOGS}/pair_table.log",
+    run:
+        log_to(log[0])
+        meta, tab = pair_counts(pd.read_csv(input.meta, sep="\t"),
+                                "ALL Pre/End isolates, before CheckM2")
+        tab.to_csv(output.table, sep="\t", index=False)
+        # Full paths, one per line. Every list file in this workflow holds
+        # full paths so no rule has to re-derive them; metadata joins
+        # recover the bare name with os.path.basename.
+        (ASM + "/" + meta["Assembly.File"]).to_csv(
+            output.genomes, index=False, header=False)
+
+
+# Assembly stats, for the record. Reports only -- filters nothing.
+#   -a   "all" stats: adds N50, Q1/Q2/Q3, sum_gap and GC. N50 is the one that
+#        matters here, for spotting assemblies shattered into short contigs
+#   -T   tab-delimited instead of the aligned human table, so it parses cleanly
+#   -X   read the input paths from a file (one per line) -- avoids a sed|xargs
+#   -j   threads
+rule seqkit_stats:
+    input:
+        genomes=rules.pair_table.output.genomes,
+    output:
+        f"{OUT}/qc_seqkit.tsv",
+    threads: THREADS
+    log:
+        f"{LOGS}/seqkit_stats.log",
+    shell:
+        "seqkit stats -a -T -j {threads} -X {input.genomes} -o {output} "
+        "2> {log}"
+
+
+# --- CheckM2 quality assessment -------------------------------------------
+#
+# --input is given an explicit LIST of files rather than the assemblies
+# directory, for two reasons:
+#   1. assemblies/ holds all 79 sartorii genomes, including the 5 "Post"
+#      isolates this analysis excludes. Pointing CheckM2 at the directory would
+#      score those too, and they would then flow through filter_hq straight
+#      back into the ANI comparison.
+#   2. The list comes from pair_table, so CheckM2 sees exactly the same genome
+#      set as every other rule.
+#
+# No decompression needed: CheckM2 reads .gz directly, and with a file list it
+# works out the format itself, so -x is unnecessary.
+rule checkm2:
+    input:
+        genomes=rules.pair_table.output.genomes,
+    output:
+        f"{OUT}/checkm2/quality_report.tsv",
+    threads: THREADS
+    conda:
+        CHECKM2_ENV
+    log:
+        f"{LOGS}/checkm2.log",
+    shell:
+        # Record WHICH env actually got activated. The conda: directive takes a
+        # name, and a name is only as unambiguous as the conda on PATH: another
+        # conda install on this system also has an env called "checkm2". Logging
+        # $CONDA_PREFIX and the resolved binaries makes the run self-documenting
+        # instead of relying on PATH being right.
+        "{{ echo \"CONDA_PREFIX: $CONDA_PREFIX\"; "
+        "which checkm2 diamond prodigal; }} > {log} 2>&1 && "
+        "checkm2 predict --threads {threads} "
+        "--input $(tr '\\n' ' ' < {input.genomes}) "
+        "--database_path {CHECKM2_DB} --extension fna.gz "
+        "--output-directory {OUT}/checkm2 --force "
+        ">> {log} 2>&1"
+
+
+# Keep only high-quality genomes, using the MIMAG "high-quality draft" bar
+# (Bowers et al. 2017): >90% complete, <5% contamination.
+MIN_COMPLETENESS = 90.0
+MAX_CONTAMINATION = 5.0
+
+
+rule filter_hq:
+    input:
+        report=rules.checkm2.output,
+        genomes=rules.pair_table.output.genomes,
+    output:
+        # Full paths, ready for `skani -l`; no separate path-building rule.
+        keep=f"{OUT}/genomes_hq.txt",
+        drop=f"{OUT}/genomes_excluded.tsv",
+    log:
+        f"{LOGS}/filter_hq.log",
+    run:
+        log_to(log[0])
+        qc = pd.read_csv(input.report[0], sep="\t")
+        # CheckM2's "Name" is the filename without extension; restore ours.
+        qc["genome"] = qc["Name"] + ".fna.gz"
+
+        hq = ((qc["Completeness"] > MIN_COMPLETENESS) &
+              (qc["Contamination"] < MAX_CONTAMINATION))
+        qc["high_quality"] = hq
+
+        (ASM + "/" + qc.loc[hq, "genome"]).to_csv(
+            output.keep, index=False, header=False)
+        qc.loc[~hq, ["genome", "Completeness", "Contamination",
+                     "Genome_Size", "Contig_N50"]].sort_values(
+            "Completeness").to_csv(output.drop, sep="\t", index=False)
+
+        logging.info(f"CheckM2: {hq.sum()} of {len(qc)} genomes pass "
+              f">={MIN_COMPLETENESS}% complete, <{MAX_CONTAMINATION}% contam")
+        if (~hq).any():
+            logging.info("\nexcluded:")
+            logging.info(qc.loc[~hq, ["genome", "Completeness", "Contamination"]]
+                    .sort_values("Completeness").to_string(index=False))
+
+
+# The design you will ACTUALLY analyse, after CheckM2 removes genomes. Same
+# function as pair_table, so the two tables are directly comparable -- read
+# them side by side to see exactly what the quality filter cost you. A mouse
+# that loses all of one timepoint drops out of the comparison entirely.
+rule pair_table_hq:
+    input:
+        meta=META_CURATED,
+        keep=rules.filter_hq.output.keep,
+    output:
+        f"{OUT}/pair_table_hq.tsv",
+    log:
+        f"{LOGS}/pair_table_hq.log",
+    run:
+        log_to(log[0])
+        keep = {os.path.basename(l.strip())
+                for l in open(input.keep) if l.strip()}
+        meta = pd.read_csv(input.meta, sep="\t")
+        meta = meta[meta["Assembly.File"].isin(keep)]
+        _, tab = pair_counts(meta, "AFTER CheckM2 high-quality filter")
+        tab.to_csv(output[0], sep="\t", index=False)
+
+
+# skani rather than fastANI as primary: fastANI discards contigs shorter than
+# --fragLen (3 kb) and several of these assemblies have an N50 near 1 kb.
+#
+# skani triangle = all-vs-all within one set of genomes (as opposed to
+# `skani dist`, which is query-vs-reference).
+#
+#   -l          read the genome list from a file, one path per line
+#   -o          write here instead of stdout
+#   -t          threads
+#   --slow      alias for -c 30. -c is the marker-kmer compression factor:
+#               lower = more kmers indexed = more sensitive. The skani authors
+#               note lowering -c "almost always" improves the aligned-fraction
+#               estimate, which is exactly the weak point on fragmented
+#               assemblies like these. Costs ~4x runtime vs the default -c 125.
+#   -E          sparse output: one row per pair, rather than a dense matrix.
+#               KEEP THIS. annotate_ani.py needs one row per pair to join
+#               metadata onto both genomes; the dense format would have to be
+#               melted (skip the count line, parse ragged rows, stack, drop the
+#               diagonal, de-duplicate i/j) and the two aligned fractions would
+#               have to be recovered from a separate .af file.
+#   --min-af 0  default is 15, which SILENTLY DROPS any pair whose aligned
+#               fraction is under 15%. Setting 0 keeps every pair so that
+#               discarding low-AF comparisons is a visible analysis decision
+#               rather than a hidden default.
+#
+# The {mode} wildcard runs this twice: once with --slow, once without. Nothing
+# else differs, so any difference between the two outputs is that flag alone.
+rule skani_pairs:
+    input:
+        paths=rules.filter_hq.output.keep,
+    output:
+        f"{OUT}/skani_pairs_{{mode}}.tsv",
+    params:
+        flag=lambda w: MODES[w.mode],
+    threads: THREADS
+    log:
+        f"{LOGS}/skani_pairs_{{mode}}.log",
+    shell:
+        "skani triangle -l {input.paths} {params.flag} -t {threads} "
+        "-E --ci --min-af 0 -o {output} 2> {log}"
+
+
+# The same comparisons as a dense matrix, for clustering and heatmaps.
+#
+#   --full-matrix  emit the complete square matrix, not just the lower triangle
+#                  (most clustering and heatmap code expects square)
+#   --diagonal     include the self-vs-self comparisons. They should all be 100;
+#                  if one is not, that genome has an internal problem.
+rule skani_matrix:
+    input:
+        paths=rules.filter_hq.output.keep,
+    output:
+        f"{OUT}/skani_matrix_{{mode}}.txt",
+    params:
+        flag=lambda w: MODES[w.mode],
+    threads: THREADS
+    log:
+        f"{LOGS}/skani_matrix_{{mode}}.log",
+    shell:
+        "skani triangle -l {input.paths} {params.flag} -t {threads} "
+        "--full-matrix --diagonal --min-af 0 -o {output} 2> {log}"
+
+
+# Label every pair:
+#   within_host_across_time   Pre vs End in the SAME mouse  <- the question
+#   within_host_same_time     same mouse, same timepoint
+#   between_host_same_diet    different mice, same diet
+#   between_host_diff_diet    different mice, different diet
+#
+# The between-host classes are the null: they show what two genuinely different
+# P. sartorii strains score on these assemblies. A within-host ANI of 99.9 means
+# nothing until you know whether unrelated isolates also score 99.9 here.
+#
+# Runs once per {mode}, so the two sensitivity settings get identical treatment
+# and their summaries can be read side by side.
+rule annotate:
+    input:
+        meta=META_CURATED,
+        pairs=f"{OUT}/skani_pairs_{{mode}}.tsv",
+    output:
+        f"{OUT}/pairs_annotated_{{mode}}.tsv",
+    log:
+        f"{LOGS}/annotate_{{mode}}.log",
+    shell:
+        "python3 {SRC}/annotate_ani.py {input.meta} {input.pairs} {output} "
+        "> {log} 2>&1"
+
+
+# The paper table: one row per mouse for the within-host Pre x End comparison,
+# plus reference rows for the other comparison classes. The between-mouse row
+# is the null and is not optional -- without it an ANI of ~100 cannot be read
+# as evidence of persistence, because unrelated isolates score the same.
+rule paper_table:
+    input:
+        pairs=f"{OUT}/pairs_annotated_{{mode}}.tsv",
+        checkm2=rules.checkm2.output,
+    output:
+        f"{OUT}/table_within_host_{{mode}}.tsv",
+    log:
+        f"{LOGS}/paper_table_{{mode}}.log",
+    run:
+        log_to(log[0])
+        # One row per genome PAIR, already labelled by comparison class.
+        d = pd.read_csv(input.pairs, sep="\t")
+        # One row per GENOME. CheckM2 drops the extension from the filename, so
+        # put it back to get the same key the pair table uses.
+        qc = pd.read_csv(input.checkm2[0], sep="\t")
+        qc["genome"] = qc["Name"] + ".fna.gz"
+        qc = qc.set_index("genome")
+
+        # Width of skani's bootstrap interval. Reported so a reader can tell an
+        # ANI of 100.00 that skani is confident about from one it is not.
+        d["ci_width"] = d["ani_hi"] - d["ani_lo"]
+        # The comparison the paper is about: Pre vs End within one mouse.
+        w = d[d["comparison"] == "within_host_across_time"]
+
+        def row(comparison, diet, mice, sub, n_pre=None, n_end=None):
+            """Summarise one set of pairs into a single table row.
+
+            `sub` is any subset of the pair table; everything else is a label.
+            n_pre/n_end are only meaningful for the within-mouse rows, so the
+            reference rows leave them as "-".
+            """
+            # Genomes appearing on either side of these pairs. set() because a
+            # genome appears in many pairs and must be counted once.
+            g = sorted(set(sub["a"]) | set(sub["b"]))
+            st = qc.loc[g]          # their CheckM2 rows
+            return {
+                "Comparison": comparison,
+                "Diet": diet,
+                "Mouse(s)": mice,
+                "Pre genomes": n_pre if n_pre is not None else "-",
+                "End genomes": n_end if n_end is not None else "-",
+                # The honest n: pairs are not independent, genomes are.
+                "Genomes": len(g),
+                "Pairs": len(sub),
+                "ANI % median": f"{sub.ani.median():.2f}",
+                "ANI % range": f"{sub.ani.min():.2f}-{sub.ani.max():.2f}",
+                # Widest bootstrap interval in the set: is the identity solid?
+                "Max CI width": f"{sub.ci_width.max():.2f}",
+                # af_min is already the lower of each pair's two aligned
+                # fractions, so this is the worst-covered comparison in the set.
+                # Guards against "99.9% identical over 20% of the genome".
+                "Min AF %": f"{sub.af_min.min():.1f}",
+                # Worst genome behind the row, not the average -- an average
+                # would hide one bad assembly among many good ones.
+                "Min completeness %": f"{st.Completeness.min():.1f}",
+                "Max contam %": f"{st.Contamination.max():.1f}",
+            }
+
+        # Pairs = Pre genomes x End genomes, so the pair count overstates
+        # the independent evidence: mouse 578 has one Pre genome used in
+        # both its pairs. "Genomes" is the honest n.
+        PRE_END = "Pre vs End, same mouse"
+
+        rows = []
+        # One row per mouse. host_a == host_b for these pairs, so grouping on
+        # either side gives the same answer.
+        for (diet, host), sub in w.groupby(["diet", "host_a"]):
+            # Which isolate is the Pre one depends on the pair: skani's Ref and
+            # Query assignment is arbitrary, so read the timepoint rather than
+            # assuming side "a" is Pre. set() de-duplicates a genome that
+            # appears in several pairs.
+            pre = {r.iso_a if r.tp_a == "Pre-Treatment" else r.iso_b
+                   for r in sub.itertuples()}
+            end = {r.iso_a if r.tp_a == "End" else r.iso_b
+                   for r in sub.itertuples()}
+            rows.append(row(PRE_END, diet, str(host), sub,
+                            len(pre), len(end)))
+
+        # Same thing over all mice at once. Recomputed from w rather than summed
+        # across the per-mouse rows, so nothing can drift if a mouse is added.
+        mice = sorted(w["host_a"].unique())
+        all_pre = {r.iso_a if r.tp_a == "Pre-Treatment" else r.iso_b
+                   for r in w.itertuples()}
+        all_end = {r.iso_a if r.tp_a == "End" else r.iso_b
+                   for r in w.itertuples()}
+        rows.append(row(f"{PRE_END} - all mice pooled", "Control + Fat",
+                        ", ".join(map(str, mice)), w,
+                        len(all_pre), len(all_end)))
+
+        # Reference rows. Same genomes, same skani settings; the only thing
+        # that changes is WHICH isolates get compared. They say what an ANI
+        # near 100 is worth here -- the last row especially, since if
+        # unrelated isolates also score 100 then the rows above cannot be
+        # read as evidence that a strain persisted.
+        same_tp = d[d["comparison"] == "within_host_same_time"]
+        rows.append(row(
+            "Reference: two isolates from the same mouse, same timepoint",
+            "Control + Fat",
+            f"{same_tp.host_a.nunique()} mice", same_tp))
+
+        # The null, split by whether the two mice shared a diet. If diet
+        # structured which strain a mouse carried, the same-diet row would
+        # sit above the different-diet row.
+        for cls, label, diet in (
+                ("between_host_same_diet",
+                 "Null: two isolates from DIFFERENT mice, same diet",
+                 "Control or Fat"),
+                ("between_host_diff_diet",
+                 "Null: two isolates from DIFFERENT mice, different diet",
+                 "Control vs Fat")):
+            sub = d[d["comparison"] == cls]
+            # Both sides are different mice here, so count over both columns.
+            n_mice = pd.concat([sub.host_a, sub.host_b]).nunique()
+            rows.append(row(label, diet, f"{n_mice} mice", sub))
+
+        # Row order is the reading order: per-mouse, pooled, then the two
+        # reference classes that say what those numbers are worth.
+        tab = pd.DataFrame(rows)
+        tab.to_csv(output[0], sep="\t", index=False)
+        logging.info(tab.to_string(index=False))
