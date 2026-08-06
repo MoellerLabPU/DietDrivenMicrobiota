@@ -68,14 +68,34 @@ OUT    = f"{PROJ}/ani"
 
 SRC = workflow.basedir          # this directory; where annotate_ani.py lives
 
-THREADS = 16
+THREADS = 24
 TIMEPOINTS = ["Pre-Treatment", "End"]
 
-# Every skani step runs twice, once per sensitivity setting, and each gets its
-# own annotation and matrix. "slow" is the primary analysis (chosen for the
-# fragmented assemblies here); "default" exists so you can show the Pre-vs-End
-# conclusion does not depend on that choice. The value is the extra flag.
-MODES = {"slow": "--slow", "default": ""}
+# skani runs at two sensitivity settings; the value is the extra flag.
+# "skani_slow" was chosen for the fragmented assemblies, "skani_default" shows
+# the conclusion does not depend on that choice.
+SKANI_MODES = {"skani_slow": "--slow", "skani_default": ""}
+
+# fastANI modes; the value is --fragLen. It matters because skani prints ANI to
+# 2 decimals (hardcoded "{:.2}" in its source, no flag) and every comparison
+# here lands in 99.98-100.00, i.e. saturated. fastANI prints 4 and resolves
+# differences skani cannot see.
+#
+# --fragLen is fastANI's inclusion knob, not an ANI knob: it sets the fragment
+# size AND silently drops contigs shorter than it. At 3000 (the published
+# default) the fragmented genomes here contribute as little as 39% of their
+# sequence when acting as reference, giving aligned fractions near 26% -- close
+# to the --minFraction 0.2 cutoff below which fastANI reports nothing at all.
+# At 1000 the same genomes contribute 87%, and the minimum AF rises to 61%.
+# ANI itself barely moves (the two settings correlate at 0.97).
+#
+# Add entries here to test more values. Do NOT use 0: fastANI divides by
+# fragLen and dies with a floating point exception.
+FASTANI_MODES = {"fastani": 3000, "fastani_frag1k": 1000}
+
+# Every mode gets an identical annotation and paper table, so all are directly
+# comparable.
+ALL_MODES = list(SKANI_MODES) + list(FASTANI_MODES)
 
 # CheckM2's conda environment, given as a NAME. It must be a name, not a path:
 # Snakemake 7.32 activates a path-specified env fine but then records
@@ -173,9 +193,10 @@ rule all:
         f"{OUT}/qc_seqkit.tsv",
         f"{OUT}/genomes_excluded.tsv",
         f"{OUT}/pair_table_hq.tsv",
-        expand(f"{OUT}/pairs_annotated_{{mode}}.tsv", mode=MODES),
-        expand(f"{OUT}/table_within_host_{{mode}}.tsv", mode=MODES),
-        expand(f"{OUT}/skani_matrix_{{mode}}.txt", mode=MODES),
+        expand(f"{OUT}/pairs_annotated_{{mode}}.tsv", mode=ALL_MODES),
+        expand(f"{OUT}/table_within_host_{{mode}}.tsv", mode=ALL_MODES),
+        f"{OUT}/mode_comparison.tsv",
+        expand(f"{OUT}/skani_matrix_{{mode}}.txt", mode=SKANI_MODES),
 
 
 # Step 0: pull the P. sartorii assemblies out of the shared folder and build
@@ -390,9 +411,11 @@ rule skani_pairs:
     input:
         paths=rules.filter_hq.output.keep,
     output:
-        f"{OUT}/skani_pairs_{{mode}}.tsv",
+        f"{OUT}/ani_pairs_{{mode}}.tsv",
+    wildcard_constraints:
+        mode="|".join(SKANI_MODES),
     params:
-        flag=lambda w: MODES[w.mode],
+        flag=lambda w: SKANI_MODES[w.mode],
     threads: THREADS
     log:
         f"{LOGS}/skani_pairs_{{mode}}.log",
@@ -412,14 +435,156 @@ rule skani_matrix:
         paths=rules.filter_hq.output.keep,
     output:
         f"{OUT}/skani_matrix_{{mode}}.txt",
+    wildcard_constraints:
+        mode="|".join(SKANI_MODES),
     params:
-        flag=lambda w: MODES[w.mode],
+        flag=lambda w: SKANI_MODES[w.mode],
     threads: THREADS
     log:
         f"{LOGS}/skani_matrix_{{mode}}.log",
     shell:
         "skani triangle -l {input.paths} {params.flag} -t {threads} "
         "--full-matrix --diagonal --min-af 0 -o {output} 2> {log}"
+
+
+# --- fastANI --------------------------------------------------------------
+#
+# Run because skani saturates: its output is hardcoded to 2 decimals, and every
+# comparison here falls in 99.98-100.00. fastANI prints 4 and separates them.
+#
+# Defaults kept deliberately (--fragLen 3000, --minFraction 0.2) so the numbers
+# are comparable to published fastANI values. fastANI ignores contigs shorter
+# than --fragLen, which made it useless on the unfiltered assemblies; after the
+# CheckM2 filter the median comparison uses ~1600 fragments, so that is no
+# longer a concern. The fragment counts are carried through to the next rule so
+# it stays checkable.
+rule fastani_raw:
+    input:
+        paths=rules.filter_hq.output.keep,
+    output:
+        f"{OUT}/fastani_raw_{{mode}}.tsv",
+    # Both this and skani_pairs write ani_pairs_{mode}.tsv downstream, so each
+    # must declare which modes it owns or Snakemake cannot resolve the rule.
+    wildcard_constraints:
+        mode="|".join(FASTANI_MODES),
+    params:
+        fraglen=lambda w: FASTANI_MODES[w.mode],
+    threads: THREADS
+    log:
+        f"{LOGS}/fastani_raw_{{mode}}.log",
+    shell:
+        "fastANI --ql {input.paths} --rl {input.paths} -t {threads} "
+        "--fragLen {params.fraglen} --minFraction 0.2 "
+        "-o {output} > {log} 2>&1"
+
+
+# Reshape fastANI into the same columns skani's sparse output uses, so
+# annotate_ani.py and paper_table work on it unchanged.
+#
+# ALIGNED FRACTION: fastANI does not report one. Its last two columns are the
+# count of bidirectionally-mapped fragments and the total query fragments, and
+# their ratio is the fraction of the QUERY genome that aligned -- the standard
+# way AF is derived from fastANI. Because fastANI is asymmetric it emits both
+# directions, so each unordered pair yields an AF for each genome, matching
+# skani's Align_fraction_ref / Align_fraction_query.
+rule fastani_pairs:
+    input:
+        raw=f"{OUT}/fastani_raw_{{mode}}.tsv",
+        # Only used to know how many pairs SHOULD exist; see the check below.
+        paths=rules.filter_hq.output.keep,
+    output:
+        pairs=f"{OUT}/ani_pairs_{{mode}}.tsv",
+        # Tidied version of fastANI's raw output: a header, bare filenames
+        # instead of full paths, and the aligned fraction worked out. Both
+        # directions kept, since fastANI is asymmetric.
+        clean=f"{OUT}/fastani_clean_{{mode}}.tsv",
+    wildcard_constraints:
+        mode="|".join(FASTANI_MODES),
+    log:
+        f"{LOGS}/fastani_pairs_{{mode}}.log",
+    run:
+        log_to(log[0])
+        # input.raw is a plain string (a formatted path, not rules.*.output),
+        # so it must NOT be subscripted -- input.raw[0] is the character "/".
+        f = pd.read_csv(input.raw, sep="\t", header=None,
+                        names=["q", "r", "ani", "frags_mapped", "frags_total"],
+                        float_precision="round_trip")
+        f["q"] = f["q"].map(os.path.basename)
+        f["r"] = f["r"].map(os.path.basename)
+        f = f[f["q"] != f["r"]]
+
+        # AF of the QUERY genome in this direction, as a percentage.
+        f["af_q"] = f["frags_mapped"] / f["frags_total"] * 100
+
+        # Collapse the two directions of each unordered pair into one row.
+        f["key"] = [tuple(sorted(p)) for p in zip(f["q"], f["r"])]
+        rows = []
+        for (a, b), sub in f.groupby("key"):
+            # ANI: mean of the two directions (they differ slightly).
+            # AF: each genome's own value, taken from the direction where it
+            # was the query. A pair can be one-directional if the other
+            # direction fell below --minFraction, hence the .get fallback.
+            af = {r.q: r.af_q for r in sub.itertuples()}
+            rows.append({
+                "Ref_file": a,
+                "Query_file": b,
+                # fastANI emits 4 decimals, so the mean of its two directions
+                # has at most 5. Rounding there is exact and stops float
+                # arithmetic leaving 16-digit tails like 99.55754999999999.
+                # Change to 4 if you would rather match fastANI's own width;
+                # that DOES round (99.55755 -> 99.5576).
+                "ANI": round(sub["ani"].mean(), 5),
+                "Align_fraction_ref": af.get(a, float("nan")),
+                "Align_fraction_query": af.get(b, float("nan")),
+                "n_directions": len(sub),
+                "min_frags_total": sub["frags_total"].min(),
+            })
+
+        out = pd.DataFrame(rows)
+
+        # Completeness check. fastANI OMITS a pair entirely when the aligned
+        # fraction falls below --minFraction -- no row, no warning, no error.
+        # A dropped comparison is indistinguishable from one never requested,
+        # so nothing downstream would notice: the paper table would just quietly
+        # report fewer pairs. Fail here instead.
+        n = sum(1 for line in open(input.paths) if line.strip())
+        expected = n * (n - 1) // 2
+        if len(out) != expected:
+            raise ValueError(
+                f"fastANI returned {len(out)} of {expected} expected pairs "
+                f"({expected - len(out)} missing) for {n} genomes. fastANI "
+                f"drops a pair when its aligned fraction falls under "
+                f"--minFraction. Lower --minFraction, or lower --fragLen so "
+                f"more of each assembly is used (see FASTANI_MODES)."
+            )
+
+        out.to_csv(output.pairs, sep="\t", index=False)
+
+        (f.rename(columns={"q": "query", "r": "reference", "ani": "ANI",
+                           "frags_mapped": "fragments_mapped",
+                           "frags_total": "fragments_total",
+                           "af_q": "aligned_fraction_query_pct"})
+          [["query", "reference", "ANI", "aligned_fraction_query_pct",
+            "fragments_mapped", "fragments_total"]]
+          .sort_values(["query", "reference"])
+          .to_csv(output.clean, sep="\t", index=False))
+
+        af_min = out[["Align_fraction_ref", "Align_fraction_query"]].min().min()
+        logging.info(f"{n} genomes -> {len(out)} pairs (all {expected} present)")
+        logging.info(f"one-directional pairs: {(out.n_directions == 1).sum()}")
+        logging.info("ANI: " + out["ANI"].describe()[["min", "50%", "max"]]
+                     .to_string().replace("\n", "  "))
+        logging.info(f"fragments per comparison: min "
+                     f"{out.min_frags_total.min()}, median "
+                     f"{out.min_frags_total.median()}")
+        # How close this mode came to silently losing comparisons.
+        logging.info(f"lowest aligned fraction {af_min:.2f}% "
+                     f"vs --minFraction 20% -> margin "
+                     f"{af_min - 20:.2f} percentage points")
+        if af_min < 30:
+            logging.info("WARNING: within 10 points of the --minFraction "
+                         "cutoff; a slightly worse assembly would start "
+                         "dropping comparisons silently.")
 
 
 # Label every pair:
@@ -437,14 +602,14 @@ rule skani_matrix:
 rule annotate:
     input:
         meta=META_CURATED,
-        pairs=f"{OUT}/skani_pairs_{{mode}}.tsv",
+        pairs=f"{OUT}/ani_pairs_{{mode}}.tsv",
     output:
         f"{OUT}/pairs_annotated_{{mode}}.tsv",
     log:
         f"{LOGS}/annotate_{{mode}}.log",
     shell:
         "python3 {SRC}/annotate_ani.py {input.meta} {input.pairs} {output} "
-        "> {log} 2>&1"
+        "> {log} 2>&1" 
 
 
 # The paper table: one row per mouse for the within-host Pre x End comparison,
@@ -462,7 +627,9 @@ rule paper_table:
     run:
         log_to(log[0])
         # One row per genome PAIR, already labelled by comparison class.
-        d = pd.read_csv(input.pairs, sep="\t")
+        # round_trip: see annotate_ani.py -- the default parser
+        # shifts long floats by one ULP.
+        d = pd.read_csv(input.pairs, sep="\t", float_precision="round_trip")
         # One row per GENOME. CheckM2 drops the extension from the filename, so
         # put it back to get the same key the pair table uses.
         qc = pd.read_csv(input.checkm2[0], sep="\t")
@@ -471,7 +638,13 @@ rule paper_table:
 
         # Width of skani's bootstrap interval. Reported so a reader can tell an
         # ANI of 100.00 that skani is confident about from one it is not.
-        d["ci_width"] = d["ani_hi"] - d["ani_lo"]
+        # .round(4) only removes float subtraction noise (0.049999999999997):
+        # skani emits 2 decimals, so 4 is lossless. fastANI reports no interval,
+        # so the column is NaN for that mode rather than absent.
+        if {"ani_lo", "ani_hi"} <= set(d.columns):
+            d["ci_width"] = (d["ani_hi"] - d["ani_lo"]).round(4)
+        else:
+            d["ci_width"] = float("nan")
         # The comparison the paper is about: Pre vs End within one mouse.
         w = d[d["comparison"] == "within_host_across_time"]
 
@@ -495,18 +668,24 @@ rule paper_table:
                 # The honest n: pairs are not independent, genomes are.
                 "Genomes": len(g),
                 "Pairs": len(sub),
-                "ANI % median": f"{sub.ani.median():.2f}",
-                "ANI % range": f"{sub.ani.min():.2f}-{sub.ani.max():.2f}",
+                # No formatting anywhere below: values are written at full
+                # precision so nothing is lost to display rounding. Note skani
+                # itself only emits 2 decimals for ANI and aligned fraction, so
+                # those columns cannot be more precise than their source; the
+                # medians can, because a median of 2dp values need not be 2dp.
+                "ANI % median": sub.ani.median(),
+                "ANI % min": sub.ani.min(),
+                "ANI % max": sub.ani.max(),
                 # Widest bootstrap interval in the set: is the identity solid?
-                "Max CI width": f"{sub.ci_width.max():.2f}",
+                "Max CI width": sub.ci_width.max(),
                 # af_min is already the lower of each pair's two aligned
                 # fractions, so this is the worst-covered comparison in the set.
                 # Guards against "99.9% identical over 20% of the genome".
-                "Min AF %": f"{sub.af_min.min():.1f}",
+                "Min AF %": sub.af_min.min(),
                 # Worst genome behind the row, not the average -- an average
                 # would hide one bad assembly among many good ones.
-                "Min completeness %": f"{st.Completeness.min():.1f}",
-                "Max contam %": f"{st.Contamination.max():.1f}",
+                "Min completeness %": st.Completeness.min(),
+                "Max contam %": st.Contamination.max(),
             }
 
         # Pairs = Pre genomes x End genomes, so the pair count overstates
@@ -569,5 +748,57 @@ rule paper_table:
         # Row order is the reading order: per-mouse, pooled, then the two
         # reference classes that say what those numbers are worth.
         tab = pd.DataFrame(rows)
+        tab.to_csv(output[0], sep="\t", index=False)
+        logging.info(tab.to_string(index=False))
+
+
+# Within-mouse Pre vs End ANI, per mouse, for every mode -- the paper_table
+# comparison repeated across both tools and both settings. Rows are grouped by
+# mouse so a mouse's four estimates sit together and can be read down the
+# column. Nothing but ANI here; coverage and assembly quality live in the
+# per-mode paper tables.
+rule mode_summary:
+    input:
+        expand(f"{OUT}/pairs_annotated_{{mode}}.tsv", mode=ALL_MODES),
+    output:
+        f"{OUT}/mode_comparison.tsv",
+    log:
+        f"{LOGS}/mode_summary.log",
+    run:
+        log_to(log[0])
+        rows = []
+        for mode in ALL_MODES:
+            d = pd.read_csv(f"{OUT}/pairs_annotated_{mode}.tsv", sep="\t",
+                            float_precision="round_trip")
+            w = d[d["comparison"] == "within_host_across_time"]
+
+            for (diet, host), sub in w.groupby(["diet", "host_a"]):
+                rows.append({"mouse": str(host), "diet": diet, "mode": mode,
+                             "pairs": len(sub),
+                             "ani_med": sub["ani"].median(),
+                             # af_min is already the worse of each pair's two
+                             # aligned fractions; these are the median and the
+                             # worst across the mouse. They belong next to the
+                             # ANI because fastANI's --fragLen drops short
+                             # contigs, so the same mouse can be well or poorly
+                             # covered depending on the mode.
+                             "af_med": sub["af_min"].median(),
+                             "af_min": sub["af_min"].min()})
+
+            # All mice together, recomputed from w rather than averaged across
+            # the rows above, so an added mouse cannot make the two disagree.
+            rows.append({"mouse": "pooled", "diet": "all", "mode": mode,
+                         "pairs": len(w),
+                         "ani_med": w["ani"].median(),
+                         "af_med": w["af_min"].median(),
+                         "af_min": w["af_min"].min()})
+
+        # Sort by mouse, then by the mode order declared in ALL_MODES, so each
+        # mouse's estimates are adjacent and the modes stay in a fixed order.
+        tab = pd.DataFrame(rows)
+        tab["_m"] = tab["mode"].map({m: i for i, m in enumerate(ALL_MODES)})
+        tab = (tab.sort_values(["mouse", "_m"]).drop(columns="_m")
+                  .reset_index(drop=True))
+
         tab.to_csv(output[0], sep="\t", index=False)
         logging.info(tab.to_string(index=False))

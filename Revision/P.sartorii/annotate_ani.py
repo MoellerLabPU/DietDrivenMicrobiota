@@ -41,7 +41,10 @@ meta = meta.set_index("Assembly.File")
 # 2. skani output. It echoes back the full paths it was given, so strip them
 #    to bare filenames so they match the metadata index.
 # ---------------------------------------------------------------------------
-df = pd.read_csv(pairs_in, sep="\t")
+# float_precision="round_trip": pandas' DEFAULT parser is off by one ULP on
+# long float strings -- it reads 99.55754999999999 as 99.55755, a different
+# double -- which would silently alter ANI values on the way through.
+df = pd.read_csv(pairs_in, sep="\t", float_precision="round_trip")
 df["a"] = df["Ref_file"].map(os.path.basename)
 df["b"] = df["Query_file"].map(os.path.basename)
 
@@ -112,7 +115,7 @@ logging.info("=== ANI by comparison class ===")
 logging.info(df.groupby("comparison")
         .agg(n=("ani", "size"), ani_min=("ani", "min"),
              ani_med=("ani", "median"), ani_max=("ani", "max"),
-             af_min=("af_min", "min")).round(3).to_string())
+             af_min=("af_min", "min")).to_string())
 
 w = df[df["comparison"] == "within_host_across_time"]
 logging.info("\n=== within-host Pre vs End, per mouse (the key contrast) ===")
@@ -122,15 +125,15 @@ else:
     logging.info(w.groupby(["diet", "host_a"])
            .agg(n_pairs=("ani", "size"), ani_min=("ani", "min"),
                 ani_med=("ani", "median"), af_min=("af_min", "min"))
-           .round(3).to_string())
+           .to_string())
 
     # The comparison that actually carries the argument.
     bet = df[df["comparison"].str.startswith("between_host")]
     logging.info("\n=== separation from the null ===")
-    logging.info(f"within-host  Pre x End : median {w['ani'].median():.3f}  "
-          f"min {w['ani'].min():.3f}  (n={len(w)})")
-    logging.info(f"between-host           : median {bet['ani'].median():.3f}  "
-          f"max {bet['ani'].max():.3f}  (n={len(bet)})")
+    logging.info(f"within-host  Pre x End : median {w['ani'].median()}  "
+          f"min {w['ani'].min()}  (n={len(w)})")
+    logging.info(f"between-host           : median {bet['ani'].median()}  "
+          f"max {bet['ani'].max()}  (n={len(bet)})")
     logging.info("\nIf the within-host minimum sits above the between-host maximum")
     logging.info("the two distributions do not overlap, which is a much stronger")
     logging.info("statement than clearing a fixed 99.9% threshold -- 99.9 is at the")
