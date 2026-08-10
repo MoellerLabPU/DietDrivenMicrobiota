@@ -136,3 +136,8 @@ logs/
 .github/chatmodes
 # Generated figures from the per-litter boxplot notebook (re-run the notebook to regenerate)
 Revision/AlleleFlux/notebooks/figures/
+# Relative-abundance regression: generated outputs and local-only docs (re-run the notebook to regenerate)
+Revision/relative_abundance/figures/
+Revision/relative_abundance/tables/
+Revision/relative_abundance/DESIGN.md
+Revision/relative_abundance/rel_abundance_regression.html
