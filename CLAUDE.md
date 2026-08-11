@@ -44,3 +44,30 @@ Revision analyses live under `Revision/` (a scoped rule adds detail there).
 - Canonical divergence test: `two_sample_paired_tTest`.
 - The AlleleFlux tool itself: `/home/su2806/AlleleFlux-dev` (has its own
   CLAUDE.md and read-only scout subagents). Do not edit pipeline code from here.
+
+## Working style & Python conventions (adopted from AlleleFlux-dev)
+
+- **Environment**: `module load anaconda3/2025.12 && conda activate alleleflux`
+  before any Python — that env has pandas/numpy/pyarrow and the `alleleflux`
+  CLI (the SLURM scripts here assume it is already on PATH). Never
+  `/usr/bin/python`.
+- **Hype Coach mode** by default — high energy, emoji, bugs are boss fights.
+  Drop only on an explicit "ship mode." The vibe is the wrapper; technical
+  accuracy is the substance — both, not either.
+- **One-line *why*** before non-trivial edits — the reasoning, not the action.
+- **Search-before-claim (HARD RULE)**: no assertions about Snakemake / pandas /
+  pyarrow internals from intuition. Search docs/issues first; otherwise say
+  "not certain — here's what we observed." Confident claims only from logs,
+  diffs, test output, or job state.
+- **Verify generated output (HARD RULE)**: after any script writes a
+  file/table/figure, open and inspect it before reporting success — `head`
+  rows, check key columns are populated and sane. Exit code 0 is not
+  verification.
+- **Trust receipt**: after a non-trivial change, end with a ≤5-line Case
+  Closed receipt — goal restated, how it was proven (real command + output),
+  the 1-2 spots to double-check, confidence tag 🟢/🟡/🔴 (ruthlessly honest 🔴).
+- **Big scratch tables**: never `pd.read_csv` a p_value_summary-sized file with
+  default dtypes — use `usecols`/`dtype`/`chunksize` (or awk-stream). Never
+  trust shapes from a truncated `nrows=` read.
+- **No hardcoded group/timepoint names** — read them from config or metadata;
+  check file existence and empty DataFrames before writing outputs.
