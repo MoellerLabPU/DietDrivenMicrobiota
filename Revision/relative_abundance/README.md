@@ -8,7 +8,13 @@ Scope: the `pre_end-fat_control` comparison of the `AlleleFlux_mapq20` run, `sin
 
 `DESIGN.md` is the full write-up — method, validation of the inputs, and a step-by-step comparison
 against the DRIDO `heatmap_support_summary.py` pipeline. Start there for the *why*; this file is the
-*how to run*.
+*how to run*. `METRICS_EXPLAINED.md` is the shareable plain-language glossary of every term and how
+it is calculated (aimed at readers outside the repo).
+
+The regression notebook restricts **all three units to the 62 divergence-tested MAGs**
+(`two_sample_paired_tTest`), so the parallelism fits run on 62 MAGs too, not their own 68/72
+universes. `rel_abundance_by_cell.tsv` itself still carries all 202 tested cells; the subset happens
+in the notebook, after the merge.
 
 ## Layout
 
