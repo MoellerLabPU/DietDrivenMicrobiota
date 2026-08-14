@@ -140,4 +140,9 @@ Revision/AlleleFlux/notebooks/figures/
 Revision/relative_abundance/figures/
 Revision/relative_abundance/tables/
 Revision/relative_abundance/DESIGN.md
-Revision/relative_abundance/rel_abundance_regression.html
+
+# Jupyter / Quarto HTML exports. Every .html under Revision/ is rendered from a
+# sibling .ipynb or .qmd, so the notebook is the source and the export is output --
+# re-render rather than committing it. They also diff terribly, being one long line
+# of embedded base64.
+Revision/**/*.html
