@@ -41,9 +41,18 @@ outputs (mapq20 is tsv.gz), and it ships ready-made
 
 ## Sibling analyses
 
-- `Revision/variable_sites/` — per-SGB variable-site counts and spacing
-  (mapq20, Fig-1 SGBs). "Variable site" definitions and the three nested site
-  sets: invoke the `alleleflux-internals` skill first.
+- `Revision/variable_sites/` — variable-site counts and spacing at **contig, SGB
+  and summary level** (mapq20, the 62 divergence-tested Fig-1 SGBs). A "variable
+  site" here means **a site that was TESTED** — a `p_value_summary` row — under
+  four definitions (`div` / `hf` / `lf` / `union`), because the between- and
+  within-group tests test different sites (21.5% of HF-tested are not
+  divergence-tested). Each significance question uses its own tested denominator.
+  Its `METHODS.md` is **generated** by `report/explain_metrics.py` and derives
+  every metric on real data with a self-checking cross-check table — read it
+  before touching the arithmetic. Settled gotchas recorded there: the uniform
+  null is `(L+1)/(n+1)` and not `L/n`; `p_value_summary` needs `test_type`
+  **and** `group_analyzed` pinned (the code asserts uniqueness rather than
+  deduping, since a dedupe would silently merge the diet groups).
 - `Revision/relative_abundance/` — regression of AlleleFlux significance vs
   MAG relative abundance; its tables/figures live on scratch (see its README).
 - `Revision/P.sartorii/` — isolate follow-up.
