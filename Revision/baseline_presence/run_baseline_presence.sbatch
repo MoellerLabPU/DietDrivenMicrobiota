@@ -10,7 +10,7 @@
 
 COMPARISON=pre_end-fat_control
 
-# ---- inputs (Sam's mapq20 run)
+# ---- inputs (the mapq20 run)
 RUN_DIR=/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_mapq20/longitudinal
 PROFILES_DIR=/scratch/gpfs/AMOELLER/diet_manip/AlleleFlux_mapq20/longitudinal/profiles
 FASTA=/scratch/gpfs/AMOELLER/diet_manip/redo_representative_megamag.fa       # contig reference (NOT the prodigal .fna)

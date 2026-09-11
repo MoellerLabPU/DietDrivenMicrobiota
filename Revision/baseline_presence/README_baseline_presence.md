@@ -7,6 +7,13 @@ it appear afterwards (de novo candidate)?
 One run = one comparison directory (`pre_end-fat_control`) and one test. It
 reads only AlleleFlux's own outputs; the strain-turnover step is optional.
 
+**Naming.** Every column name and label that refers to a timepoint uses the
+comparison's own timepoint names, exactly as the metadata spells them: `pre`
+and `end` for `pre_end-fat_control` (so `n_pre_samples_covered`,
+`allele_absent_at_end`), `5mo` and `22mo` for a DRiDO comparison. Nothing is
+hard-coded; "earlier" and "later" below mean the first and second timepoint of
+the comparison.
+
 ```
 alleleflux-baseline-presence \
   --run_dir  <run>/longitudinal  --comparison pre_end-fat_control \
@@ -21,8 +28,7 @@ alleleflux-baseline-presence \
 
 1. **Roster.** From the metadata (the run's original input file, not a per-MAG
    `inputMetadata` file, whose rosters differ per MAG), keep the two groups and
-   two timepoints of the comparison; label each sample `t0` (earlier) or `t1`
-   (later).
+   two timepoints of the comparison.
 2. **Sites.** Open `p_value_summary_{summary}_*.tsv`, keep rows whose
    `test_type` equals `--test_type` and whose `--threshold_column` is
    `<= --threshold`.
@@ -31,10 +37,10 @@ alleleflux-baseline-presence \
    the two alleles are mirror images and both tie; both are reported, with
    `n_alleles_tied_at_min_p = 2`.
 4. **Reads.** One job per (MAG, sample), for **every** sample of the comparison,
-   t0 and t1 alike: load the profile once, and for every candidate (site,
+   both timepoints alike: load the profile once, and for every candidate (site,
    allele) count that allele's reads and give a status.
-5. **Tables.** Join site and sample context, label each t1 row against its own
-   mouse's t0, write the long table and the per-site summary.
+5. **Tables.** Join site and sample context, label each `end` row against its
+   own mouse's `pre`, write the long table and the per-site summary.
 
 ## Filters, in the order they apply
 
@@ -65,12 +71,12 @@ means "we looked properly and it was not there".
 One row per site × allele × sample. Real rows, MAG bin.012, allele **G** at
 position 13509 (paired tTest, q = 0.044):
 
-| sample | mouse | group | role | allele_reads | total_reads | bar | status | origin_in_own_mouse |
+| sample | mouse | group | time | allele_reads | total_reads | bar | status | origin_in_own_mouse |
 |---|---|---|---|---|---|---|---|---|
-| SLG194 | 533 | fat | t0 | 14 | 19 | 3 | present | |
-| SLG1120 | 546 | control | t1 | 3 | 5 | 3 | present | standing_variation |
-| SLG1121 | 547 | control | t1 | 7 | 9 | 3 | present | t0_not_covered |
-| SLG1102 | 542 | control | t1 | 0 | 2 | 2 | not_covered | t1_not_covered |
+| SLG194 | 533 | fat | pre | 14 | 19 | 3 | present | |
+| SLG1120 | 546 | control | end | 3 | 5 | 3 | present | standing_variation |
+| SLG1121 | 547 | control | end | 7 | 9 | 3 | present | pre_not_covered |
+| SLG1102 | 542 | control | end | 0 | 2 | 2 | not_covered | end_not_covered |
 
 How the per-sample columns are computed (filters in **bold**):
 
@@ -82,21 +88,21 @@ How the per-sample columns are computed (filters in **bold**):
 | allele_frequency | allele_reads / total_reads; NaN when not covered | **depth gate** |
 | allele_status | `not_covered` if total_reads < min_cov; else `present` if allele_reads >= bar **and** frequency >= min_freq; else `absent` if 0 reads; else `below_detection` | **depth gate, bar, 5 % floor** |
 | allele_present | allele_status == present | same |
-| origin_in_own_mouse | this row's status + the same mouse's t0 status, table below | same, on both timepoints |
+| origin_in_own_mouse | this row's status + the same mouse's `pre` status, table below | same, on both timepoints |
 
-`origin_in_own_mouse` is filled on t1 rows only and reads **both** timepoints of
-the same mouse:
+`origin_in_own_mouse` is filled on `end` rows only and reads **both** timepoints
+of the same mouse:
 
-| t1 status | own t0 status | label |
+| end status | own pre status | label |
 |---|---|---|
 | present | present | `standing_variation` |
-| present | below_detection | `de_novo_candidate_below_detection_at_t0` |
+| present | below_detection | `de_novo_candidate_below_detection_at_pre` |
 | present | absent | `de_novo_candidate` |
-| present | not_covered | `t0_not_covered` |
-| present | no t0 sample | `no_t0_sample` |
-| below_detection | any | `allele_below_detection_at_t1` |
-| absent | any | `allele_absent_at_t1` |
-| not_covered | any | `t1_not_covered` |
+| present | not_covered | `pre_not_covered` |
+| present | no pre sample | `no_pre_sample` |
+| below_detection | any | `allele_below_detection_at_end` |
+| absent | any | `allele_absent_at_end` |
+| not_covered | any | `end_not_covered` |
 
 Other columns: mag_id, contig, position, gene_id, test_type, group_analyzed,
 min_p_value, q_value, n_alleles_tied_at_min_p, replicate, time,
@@ -106,31 +112,56 @@ allele_frequency, allele_present, strain_background (only with
 ## Output 2: summary, `..._baseline_presence_summary.tsv`
 
 One row per site × allele, deliberately lean: the numbers the baseline question
-asks for, nothing else. Everything further is in the long table. "covered" =
-passed the depth gate; "present" = allele_status is `present`. The same G at 13509:
+asks for, nothing else. Everything further is in the long table. The columns
+come in two kinds and it matters which is which:
+
+* **Sample counts** (`n_*_samples_*`, `n_replicates_*`, `n_mice_*`,
+  `origin_*`) apply the presence rule: a sample counts only if it passed the
+  depth gate, and "present" means the allele cleared the bar and the 5 % floor.
+* **Read counts** (`total_reads_*`, `allele_reads_*`, `allele_frequency_*`)
+  apply **no filter at all**: every read at the position from every sample at
+  that timepoint, thin samples and profile-less samples (0 reads) included.
+  That is what makes "the allele was never seen in 1,000 reads at pre" a
+  frequency bound of < 1/1,000 rather than a statement about the filtered
+  subset.
+
+The same G at 13509:
 
 | column | value | computed as |
 |---|---|---|
 | mag_id, contig, position, gene_id, group_analyzed, allele | … | site and allele identity (`group_analyzed` is blank for two-sample tests; it separates the per-group rows of single-sample tests) |
 | n_alleles_tied_at_min_p, q_value | 2, 0.044 | copied from the site |
-| origin_any_mouse | standing_variation | allele_not_present_at_t1 if no covered t1 sample shows the allele; else standing_variation if any covered t0 sample has it present; else de_novo_candidate_below_detection_at_t0 if any t0 has it below detection; else de_novo_candidate if any covered t0 is absent; else t0_not_covered |
-| n_t0_samples_allele_present / n_t0_samples_covered | 12 / 14 | present t0 samples over t0 samples deep enough to judge |
-| n_replicates_with_allele_at_t0 | 6 | distinct replicates among the present t0 samples |
-| t0_mice_allele_present | 530,532,533,… | their subjectIDs |
-| n_mice_standing_variation | 6 | t1 samples whose own t0 had the allele present |
-| n_mice_de_novo_candidate | 1 | t1 present, own t0 covered and absent |
-| n_mice_de_novo_candidate_below_detection_at_t0 | 1 | t1 present, own t0 had reads under the bar |
+| origin_any_mouse | standing_variation | allele_not_present_at_end if no covered end sample shows the allele; else standing_variation if any covered pre sample has it present; else de_novo_candidate_below_detection_at_pre if any pre has it below detection; else de_novo_candidate if any covered pre is absent; else pre_not_covered |
+| n_pre_samples_allele_present / n_pre_samples_covered | 12 / 14 | present pre samples over pre samples deep enough to judge (filtered) |
+| n_replicates_with_allele_at_pre | 6 | distinct replicates among the present pre samples (filtered) |
+| pre_mice_allele_present | 530,532,533,… | their subjectIDs |
+| n_mice_standing_variation | 6 | end samples whose own pre had the allele present |
+| n_mice_de_novo_candidate | 1 | end present, own pre covered and absent |
+| n_mice_de_novo_candidate_below_detection_at_pre | 1 | end present, own pre had reads under the bar |
+| total_reads_pre | 168 | A+C+G+T at the position, summed over **all 30 pre samples** (unfiltered; 16 of them were too thin to count above) |
+| allele_reads_pre | 125 | G reads among them (unfiltered) |
+| allele_frequency_pre | 0.744 | 125 / 168; NaN when total is 0 |
+| total_reads_end | 245 | same, over all 30 end samples |
+| allele_reads_end | 179 | |
+| allele_frequency_end | 0.731 | 179 / 245 |
 
 Read as a sentence: G was already present in 12 of the 14 baseline mice we
 could see, in 6 of 8 replicates; of the mice we can check against their own
-baseline, 6 had it, 1 did not, 1 had a trace. Standing variation.
+baseline, 6 had it, 1 did not, 1 had a trace. Pooling every read, 125 of 168
+at pre carried G. Standing variation.
+
+For a de novo candidate the read columns give the requested upper bound: if
+`allele_reads_pre` is 0 and `total_reads_pre` is 1,000, the allele was absent
+at pre or below 1/1,000. Note the two kinds can disagree on purpose: a site can
+be `de_novo_candidate` (no covered pre sample had it present) while
+`allele_reads_pre` is 3, because those reads sat in samples under the bar.
 
 The three framings, any mouse / same replicate / same mouse, are all here. Which
 one is the headline is a design question: littermates sharing a colony justify
-"any mouse"; outbred DRiDO mice, half without a t0 sample, justify "same mouse".
-The per-mouse verdicts for every t1 sample, including the ones with no origin to
-assign (t0 not covered, no t0 sample, allele not seen at t1), are in the long
-table's `origin_in_own_mouse` column.
+"any mouse"; outbred DRiDO mice, half without an earlier sample, justify "same
+mouse". The per-mouse verdicts for every `end` sample, including the ones with
+no origin to assign (pre not covered, no pre sample, allele not seen at end),
+are in the long table's `origin_in_own_mouse` column.
 
 ## Answering the original question
 
@@ -141,10 +172,11 @@ table's `origin_in_own_mouse` column.
 | part of the question | where |
 |---|---|
 | BH-corrected significant divergence alleles at END | run with `--summary two_sample_paired --test_type two_sample_paired_tTest --threshold_column q_value --threshold 0.05`; one summary row per site × allele. Count sites with `n_alleles_tied_at_min_p` in mind: a biallelic site contributes two rows |
-| detected in **any** PRE mouse | `origin_any_mouse == standing_variation` (equivalently `n_t0_samples_allele_present >= 1`); the headline number is the share of rows |
-| detected in the **same** mouse | `n_mice_standing_variation` vs `n_mice_de_novo_candidate` (+ `_below_detection_at_t0`), per site; the stricter framing |
-| which replicates had it at PRE | `n_replicates_with_allele_at_t0` and `t0_mice_allele_present` (mouse → replicate via the metadata); the mice that lacked it or had only a trace are in the long table's t0 rows by `allele_status` |
-| reads per mouse | long table, t0 rows: `allele_reads`, `total_reads`, `detection_threshold_reads`, `allele_status` |
+| detected in **any** PRE mouse | `origin_any_mouse == standing_variation` (equivalently `n_pre_samples_allele_present >= 1`); the headline number is the share of rows |
+| detected in the **same** mouse | `n_mice_standing_variation` vs `n_mice_de_novo_candidate` (+ `_below_detection_at_pre`), per site; the stricter framing |
+| which replicates had it at PRE | `n_replicates_with_allele_at_pre` and `pre_mice_allele_present` (mouse → replicate via the metadata); the mice that lacked it or had only a trace are in the long table's pre rows by `allele_status` |
+| reads per mouse | long table, pre rows: `allele_reads`, `total_reads`, `detection_threshold_reads`, `allele_status` |
+| total reads per position across all mice, and reads carrying the allele, at PRE and END (follow-up ask) | summary: `total_reads_pre`, `allele_reads_pre`, `allele_frequency_pre` and the `_end` trio; unfiltered sums. Upper bound on a de novo allele's pre frequency = 1 / `total_reads_pre` when `allele_reads_pre` is 0 |
 | MAG, contig | on every row of both tables (`mag_id`, `contig`, `position`, `gene_id`) |
 | taxonomy | not written by the command (dropped by design); join `gtdbtk.bac120.summary.tsv` on `user_genome == mag_id` |
 
@@ -167,7 +199,7 @@ The summary is the roll-up under the filters as run and cannot be undone this wa
 
 ## Scale
 
-Profiles load once per (MAG, sample), ~3 s each. Sam's pre_end divergence:
-57 MAGs × 60 samples ≈ 3,400 loads, ~3 h on 8 cores; run it on SLURM, not the
-login node. Zero significant sites (e.g. Wilcoxon at n = 8) writes header-only
-files and exits 0.
+Profiles load once per (MAG, sample). The pre_end divergence run, 57 MAGs × 60
+samples, took 23 min and 6.4 GB on 8 cores (SLURM job 13697897); run it on
+SLURM, not the login node. Zero significant sites (e.g. Wilcoxon at n = 8)
+writes header-only files and exits 0.
