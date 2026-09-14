@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sites significant for BOTH divergence and high-fat parallelism, per species.
 
-For a reviewer response. Counts, for each species in SPECIES below:
+Counts, for each species in SPECIES below:
   1. sites with q < 0.05 in the divergence test AND q < 0.05 in HF parallelism
   2. contigs carrying at least one such site
 
@@ -59,7 +59,7 @@ Q_THRESHOLD = 0.05
 
 CHUNK = 2_000_000
 
-# The species to report on, supplied by the reviewer request: those that did NOT
+# The species to report on: those that did NOT
 # show strain replacement in >50% of HF replicates. The leading number is their
 # numbering, carried through so the output can be pasted back alongside theirs.
 SPECIES = [
