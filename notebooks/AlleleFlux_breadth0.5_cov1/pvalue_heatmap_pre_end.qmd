@@ -1,0 +1,434 @@
+---
+title: "AlleleFlux p-value heatmap — pre vs end, HF vs LF (breadth ≥ 0.5, coverage ≥ 1)"
+author: "Siddharth Uppal"
+date: today
+date-format: "YYYY-MM-DD"
+format:
+  html:
+    theme: flatly
+    toc: true
+    toc-location: left
+    embed-resources: true
+    code-fold: true
+    code-summary: "Show code"
+    code-tools: true
+execute:
+  warning: false
+  message: false
+---
+
+This notebook draws the per-MAG p-value heatmap (Extended Data figure) from the
+AlleleFlux run configured in `alleleflux_config.yaml` (submitted with
+`run_alleleflux.sh`). QC thresholds for that run: breadth ≥ 0.5, mean coverage ≥ 1,
+MAPQ ≥ 20. Only the `pre_end` period and the `fat_control` (HF vs LF) group pair are
+shown; the input is the pipeline's own `significant_sites_summary` rollup, so no
+permutation (null) run is needed for this figure.
+
+```{r setup}
+# data.table reads / reshapes the long summary table; ComplexHeatmap + circlize + grid draw
+# the two-panel heatmap (ComplexHeatmap draws straight to a graphics device, so there is no
+# ggplot/ggsave here).
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(grid)
+})
+```
+
+## Parameters (the only knobs)
+
+```{r params}
+# ===================== DATASET KNOBS — edit these to retarget ========================
+# `run_dir` is the run's data-type directory (holds p_value_summary/, scores/, ...). It is
+# <output.root_dir>/<analysis.data_type> from alleleflux_config.yaml.
+run_dir <- "/scratch/gpfs/AMOELLER/sidd/diet_manip/revision_July_2026/AlleleFlux_revision/AlleleFlux/longitudinal"
+
+# GTDB taxonomy table (user_genome + classification); same file as input.gtdb_path in the
+# config. Used only for the phylum colour bar / row grouping.
+gtdb_path <- "/scratch/gpfs/AMOELLER/diet_manip/gtdbtk.bac120.summary.tsv"
+
+# Where the figure PNG is written (created if absent). Relative to this notebook's
+# directory when rendered with `quarto render pvalue_heatmap_pre_end.qmd`.
+fig_dir <- "figures"
+
+# Period and group pair to draw. Names follow the config's timepoints_combinations
+# (["pre","end"] -> "pre_end") and groups_combinations (treatment_control -> "fat_control";
+# HF = fat, LF = control).
+sel_period <- "pre_end"
+sel_group_pair <- "fat_control"
+
+# ===================== HEATMAP KNOBS ==================================================
+# Which tests become heatmap columns: the within-group (parallelism) t-test — one column per
+# diet group — and the between-group paired t-test (divergence; subjects matched across the
+# two timepoints). Both are the t-test flavour; add e.g. "single_sample_wilcoxon" to show more.
+div_test <- "two_sample_paired"
+tests <- c("single_sample_tTest", paste0(div_test, "_tTest"))
+value <- "pct_sig_p" # cell colour: raw-p % sites significant ("pct_sig_q" for the FDR-based %)
+tax_rank <- "phylum" # taxonomy rank for the row colour bar / grouping (rows are split by it)
+
+# Saved-figure size (inches). Keep in step with the chunk-level fig.width/fig.height so the
+# saved file matches what the rendered document shows.
+hm_fig_width <- 12
+hm_fig_height <- 12
+
+# ===================== DERIVED PATHS (don't edit) =====================================
+# One row per (period, group_pair, test, group_analyzed, MAG): n sites tested, n / % significant
+# at raw p and at BH q, and the smallest p / q in the cell. Written by the pipeline's
+# `significant_sites_summary` rule.
+pval_input <- file.path(
+  run_dir,
+  "p_value_summary",
+  "significant_sites_summary",
+  "significant_sites_mag_cell_stats_long.tsv"
+)
+dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
+
+cat("run_dir        :", run_dir, "\n")
+cat("period / pair  :", sel_period, "/", sel_group_pair, "\n")
+cat("heatmap tests  :", paste(tests, collapse = ", "), "\n")
+cat(
+  "pval_input     :",
+  pval_input,
+  if (file.exists(pval_input)) " [found]" else " [MISSING]",
+  "\n"
+)
+```
+
+# p-value summary heatmap
+
+**Cell colour** = `value` (% of a MAG's tested sites significant; raw-p by default). **Stars** =
+the smallest BH-corrected `q` in that cell (`*` q<0.05, `**` q<0.01, `***` q<0.001). "Not
+tested" cells are grey. Input is `significant_sites_mag_cell_stats_long.tsv` from the
+pipeline's `significant_sites_summary` step.
+
+```{r heatmap-input-guard}
+if (!file.exists(pval_input)) {
+  cat(
+    "HEATMAP INPUT MISSING:\n  ",
+    pval_input,
+    "\n\n",
+    "This table is produced automatically by the pipeline's `significant_sites_summary` rule.\n",
+    "To (re)generate it manually with the packaged CLI:\n\n",
+    "  alleleflux-significant-sites-summary \\\n",
+    "      --input-dir ",
+    file.path(run_dir, "p_value_summary"),
+    " \\\n",
+    "      --outdir    ",
+    file.path(run_dir, "p_value_summary", "significant_sites_summary"),
+    " \\\n",
+    "      --q-threshold 0.05 --p-threshold 0.05 --cpus 8\n\n",
+    "Then re-render. The heatmap chunks below will no-op until it exists.\n",
+    sep = ""
+  )
+  have_pval <- FALSE
+} else {
+  have_pval <- TRUE
+}
+```
+
+```{r heatmap-fns}
+# % colour scale: plasma, stretched to the LARGEST % actually observed (not a fixed 0-100),
+# so the full colour range is used. Built once per figure, hence a factory.
+plasma_cols <- c(
+  "#0D0887",
+  "#6A00A8",
+  "#B12A90",
+  "#E16462",
+  "#FCA636",
+  "#F0F921"
+)
+make_pct_col <- function(max_pct) {
+  hi <- if (is.finite(max_pct) && max_pct > 0) max_pct else 1
+  colorRamp2(seq(0, hi, length.out = length(plasma_cols)), plasma_cols)
+}
+# min-q colour: bright = very significant (q~0), dark = not (q~1), fixed [0,1].
+minq_col <- colorRamp2(
+  c(0, 0.25, 0.5, 0.75, 1),
+  c("#FDE725", "#5DC863", "#21908C", "#3B528B", "#440154")
+)
+# Legend titles follow whichever `value` column is being coloured.
+pct_legend_title <- if (value == "pct_sig_q") {
+  "% of sites\nq < 0.05"
+} else {
+  "% of sites\np < 0.05"
+}
+# Star key, drawn alongside the two colour legends. The stars come from `min_q_value` (see
+# q_stars / the min-q panel's cell_fun), so the thresholds are on the BH-corrected q — NOT
+# on the raw p. Label them as q so the legend matches what is actually being thresholded.
+star_legend <- Legend(
+  labels = c("q < 0.001", "q < 0.01", "q < 0.05"),
+  title = "Significance\n(BH-corrected)",
+  type = "points",
+  pch = c("***", "**", "*"),
+  legend_gp = gpar(col = "black"),
+  background = "white"
+)
+
+# Significance stars from ONE q value (scalar by design — called per cell).
+q_stars <- function(q) {
+  if (is.na(q)) {
+    ""
+  } else if (q < 0.001) {
+    "***"
+  } else if (q < 0.01) {
+    "**"
+  } else if (q < 0.05) {
+    "*"
+  } else {
+    ""
+  }
+}
+draw_star <- function(s, x, y, size, col = "black") {
+  grid.text(s, x, y, gp = gpar(fontsize = size, col = col))
+}
+
+# Long -> wide MAG × (test|group) matrix of `value_col`. Two-sample tests (no group) get a
+# label of just the test name; single-sample get "test|group". Untested MAG×col -> NA (grey).
+build_matrix <- function(df, value_col) {
+  df[,
+    col_label := fifelse(
+      is.na(group_analyzed) | group_analyzed == "",
+      as.character(test_type),
+      paste(test_type, group_analyzed, sep = "|")
+    )
+  ]
+  wide <- dcast(df, mag_id ~ col_label, value.var = value_col)
+  mat <- as.matrix(wide[, -1])
+  rownames(mat) <- wide$mag_id
+  mat
+}
+
+# Display labels for those columns: two short lines, e.g. "within\ncontrol (tTest)" and
+# "between paired\n(tTest)". The matrix keeps its raw AlleleFlux names.
+pretty_cols <- function(cn) {
+  test <- sub("\\|.*$", "", cn)
+  grp <- ifelse(grepl("\\|", cn), sub("^.*\\|", "", cn), NA_character_)
+  kind <- ifelse(
+    grepl("^single_sample", test),
+    "within",
+    ifelse(
+      grepl("^two_sample_paired", test),
+      "between paired",
+      ifelse(grepl("^two_sample_unpaired", test), "between unpaired", test)
+    )
+  )
+  stat <- sub(
+    "^(single_sample|two_sample_paired|two_sample_unpaired)_",
+    "",
+    test
+  )
+  ifelse(
+    is.na(grp),
+    sprintf("%s\n(%s)", kind, stat),
+    sprintf("%s %s\n(%s)", kind, grp, stat)
+  )
+}
+
+# Two-panel: % (left) + min-q (right, with q-stars overlaid). Rows are NOT clustered — they are
+# split and colour-barred by GTDB `tax_rank`, ordered within each taxon by total % significant.
+two_panel <- function(
+  mat_pct,
+  mat_minq,
+  title,
+  pct_col,
+  star_size = 8,
+  star_col = "black"
+) {
+  tax <- tax_of(rownames(mat_pct), tax_rank)
+  ord <- order(tax, -rowSums(mat_pct, na.rm = TRUE))
+  mat_pct <- mat_pct[ord, , drop = FALSE]
+  mat_minq <- mat_minq[ord, , drop = FALSE]
+  tax <- tax[ord]
+  row_split <- factor(tax, levels = names(sort(table(tax), decreasing = TRUE)))
+  # Colour bar lives on the far RIGHT of the composite, opposite the MAG labels on the left.
+  right_anno <- rowAnnotation(
+    taxon = tax,
+    col = list(taxon = make_tax_colors(tax)),
+    show_annotation_name = FALSE,
+    width = unit(3, "mm"),
+    annotation_legend_param = list(taxon = list(title = tax_rank))
+  )
+
+  # Fixed body width per column: whatever is left over goes to the legends, so long taxon
+  # names in the phylum legend are never cut off.
+  body_w <- function(m) unit(27 * ncol(m), "mm")
+
+  ht_pct <- Heatmap(
+    mat_pct,
+    name = value,
+    col = pct_col,
+    width = body_w(mat_pct),
+    na_col = "grey85",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    row_split = row_split,
+    row_title = NULL, # taxon identity comes from the colour bar + its legend
+    show_row_names = TRUE, # MAG ids on the y-axis, left edge of the composite
+    row_names_side = "left",
+    row_names_gp = gpar(fontsize = 8),
+    column_labels = pretty_cols(colnames(mat_pct)),
+    column_names_rot = 0,
+    column_names_centered = TRUE,
+    column_names_gp = gpar(fontsize = 9),
+    column_title = sprintf("%s\n%% sites significant", title),
+    heatmap_legend_param = list(title = pct_legend_title)
+  )
+  ht_minq <- Heatmap(
+    mat_minq,
+    name = "min q",
+    col = minq_col,
+    width = body_w(mat_minq),
+    na_col = "grey85",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    show_row_names = FALSE,
+    right_annotation = right_anno,
+    column_labels = pretty_cols(colnames(mat_minq)),
+    column_names_rot = 0,
+    column_names_centered = TRUE,
+    column_names_gp = gpar(fontsize = 9),
+    column_title = "Min BH-corrected p-value",
+    heatmap_legend_param = list(
+      title = "Min BH-corrected\np-value",
+      at = seq(0, 1, 0.2)
+    ),
+    cell_fun = function(j, i, x, y, w, h, fill) {
+      s <- q_stars(mat_minq[i, j])
+      if (nzchar(s)) draw_star(s, x, y, star_size, star_col)
+    }
+  )
+  draw(
+    ht_pct + ht_minq,
+    merge_legends = TRUE,
+    annotation_legend_list = list(star_legend),
+    padding = unit(c(2, 2, 2, 2), "mm")
+  )
+}
+```
+
+```{r tax-load}
+# GTDB taxonomy -> MAG -> rank lookup.
+gtdb <- fread(
+  gtdb_path,
+  sep = "\t",
+  select = c("user_genome", "classification")
+)
+tax_ranks <- c(
+  "domain",
+  "phylum",
+  "class",
+  "order",
+  "family",
+  "genus",
+  "species"
+)
+gtdb[, (tax_ranks) := tstrsplit(classification, ";", fixed = TRUE)]
+for (r in tax_ranks) {
+  gtdb[[r]] <- sub("^[a-z]__", "", gtdb[[r]])
+}
+setkey(gtdb, user_genome)
+
+tax_of <- function(mags, rank = "phylum") {
+  v <- gtdb[mags][[rank]]
+  v[is.na(v) | v == ""] <- "Unclassified"
+  v
+}
+# Fixed phylum palette, so a phylum keeps its colour across every figure. Only the phyla
+# actually present are kept, so the legend never lists taxa that are absent from the panel.
+phylum_palette <- c(
+  "Firmicutes_A" = "#B0182B",
+  "Firmicutes" = "#1F6FB4",
+  "Firmicutes_B" = "#9C9C9C",
+  "Desulfobacterota_I" = "#2FA37F",
+  "Deferribacterota" = "#E0C64A",
+  "Campylobacterota" = "#7FC8E8",
+  "Bacteroidota" = "#1E8A8C",
+  "Unclassified" = "grey70"
+)
+make_tax_colors <- function(taxa) {
+  u <- sort(unique(taxa))
+  known <- intersect(names(phylum_palette), u)
+  unknown <- setdiff(u, known)
+  if (length(unknown)) {
+    warning(
+      "Phyla with no entry in `phylum_palette` (drawn grey): ",
+      paste(unknown, collapse = ", ")
+    )
+  }
+  c(phylum_palette[known], setNames(rep("grey85", length(unknown)), unknown))
+}
+cat(sprintf("Loaded GTDB: %d genomes.\n", nrow(gtdb)))
+```
+
+```{r heatmap-load}
+if (have_pval) {
+  df_all <- fread(pval_input, sep = "\t")
+  cat(sprintf(
+    "Loaded %d cell rows | comparisons: %s | group_pairs: %s | tests: %d\n",
+    nrow(df_all),
+    paste(sort(unique(df_all$comparison)), collapse = ", "),
+    paste(sort(unique(df_all$group_pair)), collapse = ", "),
+    uniqueN(df_all$test_type)
+  ))
+  missing_tests <- setdiff(tests, unique(df_all$test_type))
+  if (length(missing_tests)) {
+    warning(
+      "Tests not present in data: ",
+      paste(missing_tests, collapse = ", ")
+    )
+  }
+}
+```
+
+## Two panels (% + min-q with stars)
+
+One figure for `sel_period` × `sel_group_pair`, restricted to `tests`. **All tested MAGs** are
+shown — no signal filter. Left = % sites significant, right = min BH q with significance stars.
+Rows are **split and colour-barred by GTDB `tax_rank`** (no clustering), and within each taxon
+are ordered by total % significant. The % colour scale runs from 0 to the largest % observed in
+this period.
+
+```{r heatmap-two-panel, fig.width=12, fig.height=12}
+if (have_pval) {
+  d <- df_all[
+    group_pair == sel_group_pair & test_type %in% tests & period == sel_period
+  ]
+  if (nrow(d) == 0) {
+    cat(
+      "No heatmap rows for period =", sel_period,
+      "group_pair =", sel_group_pair,
+      "with tests:", paste(tests, collapse = ", "), "\n"
+    )
+  } else {
+    # Colour scale: 0 -> the largest % seen in this period.
+    pct_col <- make_pct_col(max(d[[value]], na.rm = TRUE))
+    mat <- build_matrix(d, value)
+    mat_minq <- build_matrix(d, "min_q_value")
+    # Every tested MAG is shown; MAGs with no signal simply read as 0%.
+    cat(sprintf(
+      "%s: %d MAGs shown (%d with >=1 significant site)\n",
+      sel_period,
+      nrow(mat),
+      sum(rowSums(mat > 0, na.rm = TRUE) > 0)
+    ))
+    ttl <- sprintf("%s-%s - all tested MAGs", sel_period, sel_group_pair)
+    two_panel(mat, mat_minq, ttl, pct_col)
+    # Same figure again, saved to disk. ComplexHeatmap draws to a device, so there is no
+    # ggsave equivalent — we simply redraw inside png()/dev.off(). PNG only (300 dpi), so
+    # the figure displays inline on GitHub; swap png() for pdf() if a vector copy is needed.
+    png(
+      file.path(
+        fig_dir,
+        sprintf("pvalue_heatmap_%s-%s.png", sel_period, sel_group_pair)
+      ),
+      width = hm_fig_width,
+      height = hm_fig_height,
+      units = "in",
+      res = 300
+    )
+    two_panel(mat, mat_minq, ttl, pct_col)
+    dev.off()
+  }
+}
+```
