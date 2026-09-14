@@ -21,10 +21,18 @@ DietDrivenMicrobiota/
 │   ├── bh_list_sam.py                     # BH-corrected p-value summary across tests
 │   └── combine_files.py                   # Concatenate per-MAG significance files
 │
-├── notebooks/                             # Jupyter notebooks for analysis
+├── notebooks/                             # Analysis code used in the paper (non-figure)
 │   ├── add_protein_description.ipynb      # Merge p-value summaries with protein annotations
 │   ├── isolate_analysis.ipynb             # Isolate-level analysis and visualization
-│   └── tested_sites.ipynb                 # Tested sites analysis
+│   ├── tested_sites.ipynb                 # Tested sites analysis
+│   ├── AlleleFlux_breadth0.5_cov1/        # Stricter-QC AlleleFlux run: config + pre_end p-value heatmap
+│   ├── relative_abundance/                # Is AlleleFlux significance associated with MAG abundance?
+│   └── standing_variation_vs_de_novo/     # Were the HF-favoured alleles already present at PRE?
+│
+├── additional_analyses/                   # Analyses not included in the paper
+│   ├── AlleleFlux/                        # Stricter-QC run: permutation null config, score plots
+│   ├── P.sartorii_ani/                    # P. sartorii isolate ANI, PRE vs END strain persistence
+│   └── variable_sites_spacing/            # Tested-site counts and spacing per contig / SGB
 │
 ├── megaTable/                             # MegaTable Snakemake workflow
 │   ├── README.md                          # Detailed workflow documentation
@@ -55,13 +63,27 @@ Each figure's code is organized in its own subdirectory under [`figures/`](figur
 | Figure | Directory | Description |
 |--------|-----------|-------------|
 | Fig 1C-D | [`figures/Fig1/`](figures/Fig1/) | Phylogeny with divergence/parallelism score heatmaps |
-| Fig 2A-C | [`figures/Fig2/`](figures/Fig2/) | Strain replacement (popANI) and allele frequency trajectories |
+| Fig 2A-E | [`figures/Fig2/`](figures/Fig2/) | Strain replacement (popANI), allele frequency trajectories, per-litter allele frequency violins |
 | Fig 3 | [`figures/Fig3/`](figures/Fig3/) | Gene-level COG functional enrichment (hypergeometric tests) |
 | Fig 4 | [`figures/Fig4/`](figures/Fig4/) | Phase variation analysis (*Phocaeicola sartorii* and *Bacteroides muris* isolates) using PhaseFinder |
 | Fig S2-S4 | [`figures/FigS2_S3_S4/`](figures/FigS2_S3_S4/) | Community diversity (relative abundance, Shannon, ANCOM-BC2) |
 | Fig S5-S7 | [`figures/FigS5_S6_S7/`](figures/FigS5_S6_S7/) | Supplementary score comparisons (uses code from Fig 1) |
 
 ## Components
+
+### Notebooks (`notebooks/`)
+
+Analysis code used in the paper that is not a main or supplementary figure panel. Each subdirectory has its own README.
+
+| Directory | Question |
+|-----------|----------|
+| `AlleleFlux_breadth0.5_cov1/` | AlleleFlux run with stricter per-MAG QC (breadth ≥ 0.5, coverage ≥ 1); the `pre_end` p-value heatmap shown as an Extended Data figure |
+| `relative_abundance/` | Is the significance AlleleFlux reports for a MAG associated with its relative abundance, or with how much that abundance changed? |
+| `standing_variation_vs_de_novo/` | For sites significant under the high-fat diet, was the rising allele already present at PRE, or did it appear afterwards? |
+
+### Additional Analyses (`additional_analyses/`)
+
+Analyses carried out during revision that are not included in the paper. Each subdirectory has its own README.
 
 ### Miscellaneous Scripts (`miscellaneous scripts/`)
 

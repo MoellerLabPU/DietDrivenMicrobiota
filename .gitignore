@@ -134,3 +134,16 @@ logs/
 .vscode
 .gemini/
 .github/chatmodes
+# Generated figures from the scores/heatmap qmd (re-run the notebook to regenerate)
+additional_analyses/AlleleFlux/notebooks/figures/
+# Relative-abundance regression: generated outputs and local-only docs (re-run the notebook to regenerate)
+notebooks/relative_abundance/figures/
+notebooks/relative_abundance/tables/
+notebooks/relative_abundance/DESIGN.md
+
+# Jupyter / Quarto HTML exports. Every .html under these trees is rendered from a
+# sibling .ipynb or .qmd, so the notebook is the source and the export is output --
+# re-render rather than committing it. They also diff terribly, being one long line
+# of embedded base64.
+additional_analyses/**/*.html
+notebooks/**/*.html
