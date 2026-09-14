@@ -11,8 +11,7 @@ library(tibble)
 library(writexl)
 library(ggplot2)
 
-out_dir <- "fig3_output"   # relative to this Rmd; tables and q-value plots go here
-dir.create(out_dir, showWarnings = FALSE)
+out_dir <- "fig3_output"
 
 #COG annotations
 recognizer <- read_tsv("reCOGnizer_results.tsv")
@@ -428,7 +427,6 @@ qval_plots[["protein_description"]]
 all_rows_path <- "pre_end_summary_all_rows.tsv"
 
 manhattan_out_dir <- "manhattan_plots"
-dir.create(manhattan_out_dir, showWarnings = FALSE)
 
 # Exact protein_description string to highlight
 TARGET_ANNOT <- "helix-turn-helix domain-containing protein"
