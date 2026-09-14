@@ -23,7 +23,7 @@
 # on scratch so .snakemake state never collides with other runs.
 
 SNAKEFILE=/home/su2806/AlleleFlux-dev/alleleflux/smk_workflow/visualization/visualization.smk
-CONFIG=/home/su2806/DietDrivenMicrobiota/Revision/AlleleFlux/visualization_excl5mice/alleleflux_visualization_config_excl5mice.yaml
+CONFIG=/home/su2806/DietDrivenMicrobiota/figures/Fig2/Fig2E_excl5mice/alleleflux_visualization_config_excl5mice.yaml
 
 args=(
     -s "$SNAKEFILE"

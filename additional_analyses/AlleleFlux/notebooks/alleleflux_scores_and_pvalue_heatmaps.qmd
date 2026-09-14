@@ -46,7 +46,7 @@ gtdb_path <- "/scratch/gpfs/AMOELLER/diet_manip/gtdbtk.bac120.summary.tsv"
 permuted_run_dir <- "/scratch/gpfs/AMOELLER/sidd/diet_manip/revision_July_2026/AlleleFlux_revision/AlleleFlux/permuted/perm1/longitudinal"
 
 # Where the figure PNGs are written (created if absent).
-fig_dir <- "/home/su2806/DietDrivenMicrobiota/Revision/AlleleFlux/notebooks/figures"
+fig_dir <- "figures"   # relative to this qmd
 
 # Categorical timepoint order, used when timepoint labels are NOT numeric ages (e.g. "10mo").
 # DRIDO used numeric ages (auto-ordered); the diet run uses pre/post/end (ordered by this).

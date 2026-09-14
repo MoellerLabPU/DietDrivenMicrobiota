@@ -5,8 +5,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=50G
 #SBATCH --time=02:00:00
-#SBATCH --output=/home/su2806/DietDrivenMicrobiota/Revision/baseline_presence/logs/%x_%j.out
-#SBATCH --error=/home/su2806/DietDrivenMicrobiota/Revision/baseline_presence/logs/%x_%j.err
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
 
 COMPARISON=pre_end-fat_control
 

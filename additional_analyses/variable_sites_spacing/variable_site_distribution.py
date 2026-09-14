@@ -82,7 +82,7 @@ DIVERGENCE_TEST = "two_sample_paired_tTest"
 # Parallelism = within-group: does one diet group move consistently over time?
 PARALLELISM_TEST = "single_sample_tTest"
 # HF/LF -> fat/control is an ASSUMPTION. The Fig 1 code only ever says Fat/Control;
-# the sole HF/LF mapping in the repo is Revision/.../per_litter_boxplots.ipynb.
+# the sole HF/LF mapping in the repo is figures/Fig2/per_litter_violins.ipynb.
 HF_GROUP = "fat"
 LF_GROUP = "control"
 # BH-corrected. Note the correction is applied genome-wide across all MAGs pooled,

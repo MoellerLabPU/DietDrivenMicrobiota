@@ -326,7 +326,7 @@ an absence of data.
 
 **HF and LF map to `fat` and `control` by assumption.** The Fig 1 code only says
 `Fat` and `Control`; the only HF/LF mapping in the repo is in
-`Revision/AlleleFlux/notebooks/per_litter_boxplots.ipynb`. If the control diet is
+`figures/Fig2/per_litter_violins.ipynb`. If the control diet is
 not a low-fat diet, Q9 and Q10 were asking about a group this run does not hold.
 
 ## Two properties to state when presenting the numbers

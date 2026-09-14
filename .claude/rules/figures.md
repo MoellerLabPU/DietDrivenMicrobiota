@@ -26,14 +26,14 @@ paths:
   `metadata_path` (→ `permuted/permute_diet_every_other_mouse_md/perm_group_swap_set{1,2,3}.tsv`),
   `output.root_dir` (→ `permuted/perm{1,2,3}`), and the fixed `fasta_path`.
   They are full reruns on hand-made swap sheets — NOT seed-generated
-  `permutation:`-block runs (that newer mechanism is used in `Revision/`).
+  `permutation:`-block runs (that newer mechanism is used in `additional_analyses/AlleleFlux/`).
 
 ## Fig 2C (`figures/Fig2/alleleflux_visualization_config.yaml`)
 
 - `test_type: "two_sample_paired_tTest"` (line 54) and
   `significant_sites_file` → mapq20 `p_value_summary_two_sample_paired_pre_end.tsv`
   (line 40). This config is the base that
-  `Revision/AlleleFlux/alleleflux_visualization_config_per_replicate.yaml`
+  `figures/Fig2/Fig2E_excl5mice/alleleflux_visualization_config_excl5mice.yaml`
   was copied from.
 
 Schemas / stats semantics for anything these figures read: invoke the

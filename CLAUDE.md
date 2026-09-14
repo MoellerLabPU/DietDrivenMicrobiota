@@ -23,11 +23,14 @@ p_value_summary row shape, BH/q-value scope, 0-based positions), invoke the
 | Fig 1C-D + FigS5-S7 | `figures/Fig1/scores_figs.Rmd` | `AlleleFlux_mapq20` scores + `minBH_summary_real.tsv`; run config `figures/Fig1/alleleflux_config_mapq20.yml`, null = `*_perm{1,2,3}.yml` |
 | Fig 2A-B | `figures/Fig2/` | inStrain `genomeWide_compare.tsv` + GTDB-Tk/dRep |
 | Fig 2C | `figures/Fig2/alleleflux_visualization_config.yaml` | mapq20 `p_value_summary` + `profiles` |
+| Fig 2D | `figures/Fig2/per_litter_violins.ipynb` | SLG443_bin.96 `track_freqs` long table (count-normalized violins) |
+| Fig 2E | `figures/Fig2/Fig2E_excl5mice/` | visualization run with 5 mice excluded; paper uses the 50-day bin |
 | Fig 3 | `figures/Fig3/` | per-MAG gene score TSVs, reCOGnizer, `sweeps.tsv` |
 | Fig 4 | `figures/Fig4/Snakefile_miceisolate_phasevariation` | PhaseFinder on isolate reads (no AlleleFlux) |
 | FigS2-S4 | `figures/FigS2_S3_S4/diversity.Rmd` | per-sample inStrain profiles |
 
-Revision analyses live under `Revision/` (a scoped rule adds detail there).
+Paper-included revision analyses live under `notebooks/`; analyses not in the paper
+live under `additional_analyses/` (a scoped rule adds detail there).
 
 ## Run roots on /scratch (read-only from this repo)
 

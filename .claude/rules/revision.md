@@ -1,58 +1,63 @@
 ---
 paths:
-  - "Revision/**"
+  - "additional_analyses/**"
+  - "notebooks/AlleleFlux_breadth0.5_cov1/**"
+  - "notebooks/relative_abundance/**"
+  - "notebooks/standing_variation_vs_de_novo/**"
 ---
 
-# Revision/ — July 2026 revision analyses (verified 2026-08-10)
+# July 2026 revision analyses (restructured 2026-09-14)
 
-Everything here targets the **revision run**:
+`Revision/` was split: analyses that made it into the paper moved to
+`notebooks/`, the rest were renamed to `additional_analyses/`. Fig 2D (per-litter
+violins) and Fig 2E (five-mice-excluded trajectories) moved to `figures/Fig2/`.
+
+## The revision AlleleFlux run
+
 `/scratch/gpfs/AMOELLER/sidd/diet_manip/revision_July_2026/AlleleFlux_revision/AlleleFlux`
 — tighter QC than the published mapq20 run (22 paired pre_end MAGs vs 62; 39
 MAGs in `allele_analysis_pre_end-fat_control/`), **parquet** allele_analysis
 outputs (mapq20 is tsv.gz), and it ships ready-made
 `p_value_summary/significant_sites_summary/` rollups that mapq20 lacks.
 
-## AlleleFlux configs (`Revision/AlleleFlux/`)
+- `notebooks/AlleleFlux_breadth0.5_cov1/` — the paper's extended-data heatmap:
+  as-run `alleleflux_config.yaml` + `run_alleleflux.sh` (copies; the script's
+  `CONFIG=` line points at the config beside it, everything else as run),
+  `pvalue_heatmap_pre_end.qmd` (pre_end, fat_control; no permutation null needed),
+  and the rendered PNG. Render with the `alleleflux-R` conda env + Positron's
+  bundled quarto; `fig_dir` is relative.
+- `additional_analyses/AlleleFlux/` — the same config again, the perm1 null in
+  **BYO mode** (`permutation.enabled: True`, `permuted_metadata_dir` → its own
+  `permuted/perm1` root, `input.reuse_from` → the real run's `longitudinal/`;
+  one BYO run = one sheet), both slurm scripts, `fix_bam_paths.py`, and the full
+  `alleleflux_scores_and_pvalue_heatmaps.qmd` (parallelism + divergence-vs-null
+  score plots + both-period heatmaps). Memory note `alleleflux-permutation-runs`
+  has the footguns.
 
-- `alleleflux_config.yaml` — the real revision run (`run_name:
-  "AlleleFlux_revision"`, root_dir above; `permutation.enabled: False`, so that
-  block is inert).
-- `alleleflux_config_perm1.yaml` — the permutation null in **BYO mode**:
-  `permutation.enabled: True` + `permuted_metadata_dir` pointing at its own
-  `permuted/perm1` root, `input.reuse_from` → the real run's `longitudinal/`
-  dir, using the Fig-1 `perm_group_swap_set1.tsv` sheet. One BYO run = one
-  sheet; for more nulls make more configs. Mechanics + footguns: memory note
-  `alleleflux-permutation-runs`.
-- `alleleflux_visualization_config_per_replicate.yaml` — copy of
-  `figures/Fig2/alleleflux_visualization_config.yaml` with
-  `combined_per_replicate: True`; its `output_dir` deliberately reuses the
-  existing `plotting_SLG443_...` dir so cached `track_freqs` are reused, and
-  its p_value inputs still point at the OLD mapq20 run (intentional).
-- `slurm_scripts/` — sbatch wrappers for the above (`run_alleleflux.sh`,
-  `run_alleleflux_perm1.sh`, `run_visualization_per_replicate.sh`).
+## Paper-included analyses under `notebooks/`
 
-## Notebooks (`Revision/AlleleFlux/notebooks/`)
+- `relative_abundance/` — regression of AlleleFlux significance vs MAG relative
+  abundance (mapq20, pre_end, 62 divergence-tested MAGs). One README now holds
+  the how-to-run and the plain-language glossary; `DESIGN.md` is gitignored and
+  gone. Tables/figures live on scratch.
+- `standing_variation_vs_de_novo/` — three chained steps:
+  `div_and_hf_sites_in_both.py` (sites significant in both divergence and HF
+  parallelism, per non-replacing species) → `pre_allele_presence.ipynb` (raw
+  profiles for 2 species: was the HF END allele present at PRE?) →
+  `baseline_presence/` (same question for every significant site via
+  `alleleflux-baseline-presence`; its sbatch logs to a relative `logs/`).
 
-- `alleleflux_scores_and_pvalue_heatmaps.qmd` — parallelism/divergence score
-  plots + p-value heatmaps over the revision run.
-- `per_litter_boxplots.ipynb` — per-litter anchor-allele boxplots from the
-  5.2 GB SLG443_bin.96 long table; holds the repo's only HF/LF mapping
-  (`GROUP_LABELS = {"fat": "HF", "control": "LF"}`).
+## Not in the paper, under `additional_analyses/`
 
-## Sibling analyses
+- `variable_sites_spacing/` — variable-site counts and spacing at contig, SGB and
+  summary level (mapq20, the 62 divergence-tested Fig-1 SGBs). A "variable site"
+  means **a site that was TESTED** under four definitions (`div`/`hf`/`lf`/`union`).
+  README (with the column glossary merged in) + `METHODS.md`, both hand-maintained;
+  the generator that once wrote METHODS.md is gone. Settled gotchas: the uniform
+  null is `(L+1)/(n+1)` not `L/n`; `p_value_summary` needs `test_type` **and**
+  `group_analyzed` pinned (the code asserts uniqueness rather than deduping).
+- `P.sartorii_ani/` — isolate follow-up: Snakemake CheckM2 → skani, then
+  `annotate_ani.py` labels pairs by mouse/timepoint/diet for PRE→END persistence.
 
-- `Revision/variable_sites/` — variable-site counts and spacing at **contig, SGB
-  and summary level** (mapq20, the 62 divergence-tested Fig-1 SGBs). A "variable
-  site" here means **a site that was TESTED** — a `p_value_summary` row — under
-  four definitions (`div` / `hf` / `lf` / `union`), because the between- and
-  within-group tests test different sites (21.5% of HF-tested are not
-  divergence-tested). Each significance question uses its own tested denominator.
-  Its `METHODS.md` is **generated** by `report/explain_metrics.py` and derives
-  every metric on real data with a self-checking cross-check table — read it
-  before touching the arithmetic. Settled gotchas recorded there: the uniform
-  null is `(L+1)/(n+1)` and not `L/n`; `p_value_summary` needs `test_type`
-  **and** `group_analyzed` pinned (the code asserts uniqueness rather than
-  deduping, since a dedupe would silently merge the diet groups).
-- `Revision/relative_abundance/` — regression of AlleleFlux significance vs
-  MAG relative abundance; its tables/figures live on scratch (see its README).
-- `Revision/P.sartorii/` — isolate follow-up.
+The repo's only HF/LF mapping (`GROUP_LABELS = {"fat": "HF", "control": "LF"}`)
+is in `figures/Fig2/per_litter_violins.ipynb`.

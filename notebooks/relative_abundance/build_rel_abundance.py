@@ -7,7 +7,7 @@ Builds ``rel_abundance_by_cell.tsv``: one row per significant-sites heatmap *cel
 MAG's relative abundance at PRE and END and its change between them, aggregated over exactly the
 samples the corresponding statistical test used.
 
-See DESIGN.md for the full rationale. The three things that matter most:
+See README.md for the full rationale. The three things that matter most:
 
 1. **The unit of observation is the REPLICATE (cage), not the mouse.** AlleleFlux collapses every
    mouse sharing a ``replicate`` into a single unweighted mean before any test runs
@@ -186,7 +186,7 @@ def load_metadata(path: Path) -> pd.DataFrame:
     _check(
         len(reps) == N_REPLICATES,
         f"expected {N_REPLICATES} replicates, found {len(reps)}: {reps}. The metadata-only shortcut "
-        f"assumes the study's cage count; see DESIGN.md section 2.",
+        f"assumes the study's cage count; see README.md, 'If the run changes'.",
     )
 
     # Each mouse belongs to exactly one cage and one arm -- otherwise "the arm's mice in cage r" is

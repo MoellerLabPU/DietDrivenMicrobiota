@@ -6,7 +6,7 @@
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=1
 
-CONFIG=/home/su2806/DietDrivenMicrobiota/Revision/AlleleFlux/alleleflux_config.yaml
+CONFIG=/home/su2806/DietDrivenMicrobiota/additional_analyses/AlleleFlux/alleleflux_config.yaml
 
 # Tag every child SLURM job with a WCKey so sacct_stats.py can isolate this
 # run via --wckey filter. sbatch reads SBATCH_WCKEY as the default for --wckey

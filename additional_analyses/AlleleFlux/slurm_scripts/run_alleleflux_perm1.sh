@@ -12,7 +12,7 @@
 # run's profiles/QC/allele-freq cache via input.reuse_from, so only the
 # group-dependent tail is recomputed on the permuted labels.
 
-CONFIG=/home/su2806/DietDrivenMicrobiota/Revision/AlleleFlux/alleleflux_config_perm1.yaml
+CONFIG=/home/su2806/DietDrivenMicrobiota/additional_analyses/AlleleFlux/alleleflux_config_perm1.yaml
 
 # Snakemake working dir (.snakemake lock + metadata). Deliberately the perm run's
 # OWN output root — NOT the real run's workdir — so this run never shares state
