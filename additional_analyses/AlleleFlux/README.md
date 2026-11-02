@@ -15,6 +15,10 @@ paper.
 
 ## Files
 
+- **`README_midas_filter.md`** — two further runs (October 2026) with the per-site
+  depth filter on, one at `site_ratio` 3 and one at `site_ratio` 10, both from a
+  frozen clone at commit `48e3db6` and with the looser per-MAG QC of the Fig 1
+  run (breadth ≥ 0.1); configs, drivers and the exact steps are described there.
 - **`alleleflux_config.yaml`** — the run configuration (same file as the copy in
   `notebooks/AlleleFlux_breadth0.5_cov1/`). Enables LMM, CMH, dN/dS, regional
   contrast and gene scores in addition to the t-tests.
